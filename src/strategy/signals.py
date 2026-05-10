@@ -23,6 +23,7 @@ from dataclasses import dataclass
 from src.config.settings import (
     HIGH_CONVICTION_THRESHOLD,
     SR_PROXIMITY_PCT,
+    VOLUME_SPIKE_MULTIPLIER,
 )
 from src.strategy.sr_levels import SRZone
 from src.utils.logger import get_logger
@@ -76,9 +77,13 @@ def evaluate_signal(
     rsi_by_tf: dict[str, float | None],
     l_price: float,
     in_position: bool,
+    proximity_pct: float = SR_PROXIMITY_PCT,
+    version: str = "0.1",
+    current_volume: float | None = None,
+    volume_sma: float | None = None,
 ) -> SignalResult:
     """
-    Evaluate Signal 0.1 at the current 1H bar.
+    Evaluate Signal logic at the current 1H bar.
 
     Args:
         current_price:        Close price of the current 1H bar.
@@ -87,6 +92,10 @@ def evaluate_signal(
         rsi_by_tf:            Dict {timeframe: rsi_value} for all timeframes at this bar.
         l_price:              Rolling lower bound (hard stop-loss level).
         in_position:          Whether we currently hold a position.
+        proximity_pct:        Percentage proximity threshold to S/R zone.
+        version:              Signal version ('0.1' or '0.2').
+        current_volume:       Current bar volume (required for V0.2).
+        volume_sma:           Volume SMA value (required for V0.2).
 
     Returns:
         SignalResult with action: 'buy', 'sell_resistance', 'sell_stoploss', or 'hold'.
@@ -105,7 +114,7 @@ def evaluate_signal(
     # --- Exit: Resistance zone + overbought RSI ---
     if in_position:
         for zone in high_conviction:
-            if zone.kind == "resistance" and _price_near_zone(current_price, zone.price):
+            if zone.kind == "resistance" and _price_near_zone(current_price, zone.price, proximity_pct):
                 if _rsi_confirms_exit(zone, rsi_by_tf):
                     return SignalResult(
                         action="sell_resistance",
@@ -122,8 +131,16 @@ def evaluate_signal(
     # --- Entry: Support zone + oversold RSI ---
     if not in_position:
         for zone in high_conviction:
-            if zone.kind == "support" and _price_near_zone(current_price, zone.price):
+            if zone.kind == "support" and _price_near_zone(current_price, zone.price, proximity_pct):
                 if _rsi_confirms_entry(zone, rsi_by_tf):
+                    
+                    # Signal 0.2: Volume Confirmation Check
+                    if version == "0.2":
+                        if current_volume is None or volume_sma is None:
+                            continue
+                        if current_volume <= (volume_sma * VOLUME_SPIKE_MULTIPLIER):
+                            continue # Volume too low, reject signal
+                            
                     return SignalResult(
                         action="buy",
                         price=current_price,

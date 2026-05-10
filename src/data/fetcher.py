@@ -51,50 +51,78 @@ async def _fetch_ohlcv_async(
     timeframe: str,
     since_ms: int,
     until_ms: int,
+    root: str,
     batch_size: int = 1000,
 ) -> pl.DataFrame:
     """
     Async fetch of a single (symbol, timeframe) combination.
     The semaphore limits concurrency to avoid rate-limit bans.
+    Only missing gaps between since_ms and until_ms are fetched.
     """
     async with semaphore:
-        all_rows: list[list] = []
-        current_since = since_ms
-        log.info(f"  → Fetching {symbol} {timeframe} ...")
-
-        while current_since < until_ms:
-            raw = await exchange.fetch_ohlcv(
-                symbol,
-                timeframe=timeframe,
-                since=current_since,
-                limit=batch_size,
-            )
-            if not raw:
-                break
-
-            # Filter rows beyond until_ms
-            raw = [r for r in raw if r[0] <= until_ms]
-            all_rows.extend(raw)
-
-            if len(raw) < batch_size:
-                break
-
-            current_since = raw[-1][0] + 1  # advance past last fetched timestamp
-
-        if not all_rows:
-            log.warning(f"  No data returned for {symbol} {timeframe}")
+        log.info(f"  → Checking {symbol} {timeframe} ...")
+        
+        from src.data.storage import load_ohlcv
+        existing_df = load_ohlcv(symbol, timeframe, root=root)
+        
+        gaps_to_fetch = []
+        if existing_df.is_empty():
+            gaps_to_fetch.append((since_ms, until_ms))
+        else:
+            min_ts = existing_df["timestamp"].min()
+            max_ts = existing_df["timestamp"].max()
+            
+            if since_ms < min_ts:
+                gaps_to_fetch.append((since_ms, min_ts - 1))
+            if max_ts < until_ms:
+                gaps_to_fetch.append((max_ts + 1, until_ms))
+                
+        if not gaps_to_fetch:
+            log.info(f"  ✓ {symbol} {timeframe}: Up to date")
+            return pl.DataFrame(schema={c: pl.Float64 for c in _CCXT_COLS})
+            
+        all_new_rows: list[list] = []
+        
+        for gap_start, gap_end in gaps_to_fetch:
+            current_since = gap_start
+            while current_since < gap_end:
+                raw = await exchange.fetch_ohlcv(
+                    symbol,
+                    timeframe=timeframe,
+                    since=current_since,
+                    limit=batch_size,
+                )
+                if not raw:
+                    break
+    
+                # Filter rows beyond gap_end
+                raw = [r for r in raw if r[0] <= gap_end]
+                if not raw:
+                    break
+                    
+                all_new_rows.extend(raw)
+    
+                if len(raw) < batch_size:
+                    break
+    
+                current_since = raw[-1][0] + 1  # advance past last fetched timestamp
+                
+        if not all_new_rows:
+            log.warning(f"  No new data returned for {symbol} {timeframe}")
             return pl.DataFrame(schema={c: pl.Float64 for c in _CCXT_COLS})
 
-        df = pl.DataFrame(all_rows, schema=_CCXT_COLS, orient="row")
+        df = pl.DataFrame(all_new_rows, schema=_CCXT_COLS, orient="row")
         df = df.with_columns(pl.col("timestamp").cast(pl.Int64))
         df = df.unique(subset=["timestamp"]).sort("timestamp")
 
-        log.info(f"  ✓ {symbol} {timeframe}: {len(df)} candles")
+        log.info(f"  ✓ {symbol} {timeframe}: Fetched {len(df)} new candles")
         return df
 
 
 def _save_parquet(df: pl.DataFrame, symbol: str, timeframe: str, root: str) -> None:
-    """Save OHLCV DataFrame to monthly-partitioned parquet files."""
+    """Save OHLCV DataFrame to monthly-partitioned parquet files.
+    Merges with existing data to prevent overwrite loss.
+    """
     tf_label = TF_MAP.get(timeframe, timeframe.upper())
     asset_name = _asset_to_path_name(symbol)
 
@@ -108,6 +136,14 @@ def _save_parquet(df: pl.DataFrame, symbol: str, timeframe: str, root: str) -> N
         month_df = df.filter(pl.col("_ym") == ym).drop("_ym")
         path = Path(root) / asset_name / tf_label / f"{ym}.parquet"
         path.parent.mkdir(parents=True, exist_ok=True)
+        
+        if path.exists():
+            try:
+                existing_df = pl.read_parquet(str(path))
+                month_df = pl.concat([existing_df, month_df]).unique(subset=["timestamp"]).sort("timestamp")
+            except Exception as e:
+                log.error(f"Error reading existing parquet {path}: {e}")
+                
         month_df.write_parquet(str(path), compression=PARQUET_COMPRESSION)
 
 
@@ -129,7 +165,7 @@ async def _fetch_all_async(
     semaphore = asyncio.Semaphore(_MAX_CONCURRENT)
 
     tasks = [
-        _fetch_ohlcv_async(exchange, semaphore, symbol, tf, since_ms, until_ms)
+        _fetch_ohlcv_async(exchange, semaphore, symbol, tf, since_ms, until_ms, root)
         for symbol in symbols
         for tf in timeframes
     ]
@@ -193,31 +229,54 @@ def fetch_ohlcv(
     since_dt: datetime,
     until_dt: datetime | None = None,
     batch_size: int = 1000,
+    root: str = DATA_ROOT,
 ) -> pl.DataFrame:
     """Synchronous single-pair fetch (kept for compatibility)."""
     import ccxt as ccxt_sync
+    from src.data.storage import load_ohlcv
+    
     exchange = getattr(ccxt_sync, EXCHANGE_ID)({"enableRateLimit": True})
     since_ms = int(since_dt.timestamp() * 1000)
     until_ms = int(until_dt.timestamp() * 1000) if until_dt else int(time.time() * 1000)
 
-    all_rows: list[list] = []
-    current_since = since_ms
-    log.info(f"Fetching {symbol} {timeframe} from {since_dt.date()} ...")
-
-    while current_since < until_ms:
-        raw = exchange.fetch_ohlcv(symbol, timeframe=timeframe, since=current_since, limit=batch_size)
-        if not raw:
-            break
-        raw = [r for r in raw if r[0] <= until_ms]
-        all_rows.extend(raw)
-        if len(raw) < batch_size:
-            break
-        current_since = raw[-1][0] + 1
-
-    if not all_rows:
+    log.info(f"Checking {symbol} {timeframe} from {since_dt.date()} ...")
+    
+    existing_df = load_ohlcv(symbol, timeframe, root=root)
+    gaps_to_fetch = []
+    if existing_df.is_empty():
+        gaps_to_fetch.append((since_ms, until_ms))
+    else:
+        min_ts = existing_df["timestamp"].min()
+        max_ts = existing_df["timestamp"].max()
+        if since_ms < min_ts:
+            gaps_to_fetch.append((since_ms, min_ts - 1))
+        if max_ts < until_ms:
+            gaps_to_fetch.append((max_ts + 1, until_ms))
+            
+    if not gaps_to_fetch:
+        log.info(f"  ✓ {symbol} {timeframe}: Up to date")
         return pl.DataFrame(schema={c: pl.Float64 for c in _CCXT_COLS})
 
-    df = pl.DataFrame(all_rows, schema=_CCXT_COLS, orient="row")
+    all_new_rows: list[list] = []
+    
+    for gap_start, gap_end in gaps_to_fetch:
+        current_since = gap_start
+        while current_since < gap_end:
+            raw = exchange.fetch_ohlcv(symbol, timeframe=timeframe, since=current_since, limit=batch_size)
+            if not raw:
+                break
+            raw = [r for r in raw if r[0] <= gap_end]
+            if not raw:
+                break
+            all_new_rows.extend(raw)
+            if len(raw) < batch_size:
+                break
+            current_since = raw[-1][0] + 1
+
+    if not all_new_rows:
+        return pl.DataFrame(schema={c: pl.Float64 for c in _CCXT_COLS})
+
+    df = pl.DataFrame(all_new_rows, schema=_CCXT_COLS, orient="row")
     df = df.with_columns(pl.col("timestamp").cast(pl.Int64))
     return df.unique(subset=["timestamp"]).sort("timestamp")
 
@@ -230,7 +289,7 @@ def fetch_and_store(
     root: str = DATA_ROOT,
 ) -> pl.DataFrame:
     """Synchronous fetch + store for a single symbol/timeframe (kept for compatibility)."""
-    df = fetch_ohlcv(symbol, timeframe, since_dt, until_dt)
+    df = fetch_ohlcv(symbol, timeframe, since_dt, until_dt, root=root)
     if len(df) > 0:
         _save_parquet(df, symbol, timeframe, root)
     return df

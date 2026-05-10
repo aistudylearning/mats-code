@@ -7,7 +7,18 @@ Do not change without a versioned spec update.
 # ---------------------------------------------------------------------------
 # MVP Assets & Exchange
 # ---------------------------------------------------------------------------
-MVP_ASSETS = ["BTC/USDT", "ETH/USDT", "SOL/USDT", "ADA/USDT"]
+MVP_ASSETS = [
+    "BTC/USDT", "ETH/USDT", "XRP/USDT", "BNB/USDT", "SOL/USDT",
+    "TRX/USDT", "DOGE/USDT", "ADA/USDT", "ZEC/USDT", "BCH/USDT",
+    "LINK/USDT", "XMR/USDT", "TON/USDT", "XLM/USDT", "SUI/USDT",
+    "LTC/USDT", "AVAX/USDT", "HBAR/USDT", "SHIB/USDT", "FTM/USDT",
+    "TAO/USDT", "UNI/USDT", "DOT/USDT", "NEAR/USDT", "ONDO/USDT",
+    "ICP/USDT", "PEPE/USDT", "ETC/USDT", "AAVE/USDT", "ENA/USDT",
+    "ALGO/USDT", "POL/USDT", "QNT/USDT", "RENDER/USDT", "ATOM/USDT",
+    "FIL/USDT", "WLD/USDT", "APT/USDT", "ARB/USDT", "JUP/USDT",
+    "SAND/USDT", "VET/USDT", "BONK/USDT", "DASH/USDT", "STX/USDT",
+    "CHZ/USDT", "SEI/USDT", "XTZ/USDT", "CFX/USDT", "INJ/USDT",
+]
 EXCHANGE_ID = "binance"
 
 # ---------------------------------------------------------------------------
@@ -65,12 +76,8 @@ SR_PROXIMITY_PCT = 0.02    # ±2%
 # ---------------------------------------------------------------------------
 # Capital Allocation — Section 7 (Locked)
 # ---------------------------------------------------------------------------
-ASSET_ALLOCATION = {
-    "BTC/USDT": 0.25,
-    "ETH/USDT": 0.25,
-    "SOL/USDT": 0.25,
-    "ADA/USDT": 0.25,
-}
+# Allocate equally across all MVP assets (e.g. 2% for 50 assets)
+ASSET_ALLOCATION = {symbol: 1.0 / len(MVP_ASSETS) for symbol in MVP_ASSETS}
 
 # Rolling hard bounds: trailing 52-week window updated weekly
 ROLLING_WINDOW_WEEKS = 52
@@ -96,3 +103,10 @@ MIN_SPREAD_TO_TRADE = ROUND_TRIP_FRICTION  # 0.30%
 # ---------------------------------------------------------------------------
 DEFAULT_INITIAL_CAPITAL = 10_000.0   # USD
 DEFAULT_BACKTEST_ASSET = "BTC/USDT"
+
+# ---------------------------------------------------------------------------
+# Signal 0.2 Upgrades
+# ---------------------------------------------------------------------------
+VOLUME_SMA_LENGTH = 20
+VOLUME_SPIKE_MULTIPLIER = 1.5
+

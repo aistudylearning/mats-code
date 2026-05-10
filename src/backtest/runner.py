@@ -27,6 +27,10 @@ def run_portfolio_backtest(
     total_capital: float = DEFAULT_INITIAL_CAPITAL,
     data_root: str = DATA_ROOT,
     n_jobs: int = -1,
+    signal_version: str = "0.1",
+    proximity_pct: float | None = None,
+    export_csv: bool = False,
+    export_html: bool = False,
 ) -> dict[str, BacktestResult]:
     """
     Run backtests for all specified assets in parallel and aggregate results.
@@ -49,7 +53,7 @@ def run_portfolio_backtest(
     log.info(f"Starting portfolio backtest | capital={total_capital:.2f} | assets={symbols}")
 
     results_list: list[BacktestResult] = Parallel(n_jobs=n_jobs)(
-        delayed(run_backtest)(symbol, total_capital, data_root)
+        delayed(run_backtest)(symbol, total_capital, data_root, signal_version, proximity_pct)
         for symbol in symbols
     )
 
@@ -71,5 +75,13 @@ def run_portfolio_backtest(
         f"  Total Trades : {total_trades}\n"
         f"{'='*50}"
     )
+
+    if export_csv:
+        from src.utils.exporter import export_trades_to_csv
+        export_trades_to_csv(results)
+
+    if export_html:
+        from src.utils.html_exporter import export_results_to_html
+        export_results_to_html(results, data_root=data_root)
 
     return results

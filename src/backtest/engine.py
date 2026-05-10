@@ -29,7 +29,7 @@ from src.config.settings import (
     SR_WEIGHTS,
 )
 from src.data.storage import load_ohlcv
-from src.strategy.indicators import compute_rsi_all_timeframes
+from src.strategy.indicators import compute_indicators_all_timeframes
 from src.strategy.portfolio import compute_position_size_usd, compute_rolling_bounds
 from src.strategy.signals import SignalResult, evaluate_signal
 from src.strategy.sr_levels import SRZone, build_sr_zones, get_active_zones
@@ -63,6 +63,7 @@ class BacktestResult:
     initial_capital: float
     final_capital: float
     total_return_pct: float
+    isolated_return_pct: float
     total_trades: int
     winning_trades: int
     losing_trades: int
@@ -136,9 +137,11 @@ def run_backtest(
     symbol: str,
     initial_capital: float = DEFAULT_INITIAL_CAPITAL,
     data_root: str = DATA_ROOT,
+    signal_version: str = "0.1",
+    proximity_pct: float | None = None,
 ) -> BacktestResult:
     """
-    Run a full Signal 0.1 backtest for a single asset.
+    Run a full Signal backtest for a single asset.
 
     Args:
         symbol:          e.g. 'BTC/USDT'
@@ -167,9 +170,9 @@ def run_backtest(
         raise ValueError("Missing 1H OHLCV data")
 
     # ------------------------------------------------------------------
-    # 2. Compute RSI for all timeframes
+    # 2. Compute RSI and Indicators for all timeframes
     # ------------------------------------------------------------------
-    frames_with_rsi = compute_rsi_all_timeframes(frames)
+    frames_with_indicators = compute_indicators_all_timeframes(frames)
 
     # ------------------------------------------------------------------
     # 3. Build all S/R zones (Algorithm A, all timeframes)
@@ -181,11 +184,11 @@ def run_backtest(
     # ------------------------------------------------------------------
     # 4. Main backtest loop: iterate over 1H bars
     # ------------------------------------------------------------------
-    bars_1h = frames["1h"]
+    bars_1h = frames_with_indicators["1h"]
     weekly_df = frames.get("1w", pl.DataFrame())
 
     # Pre-compute RSI lookup tables — built once, used 17k+ times
-    rsi_lookup = _build_rsi_lookup(frames_with_rsi)
+    rsi_lookup = _build_rsi_lookup(frames_with_indicators)
 
     # Pre-build weekly timestamp/bounds arrays for O(log n) lookups
     if not weekly_df.is_empty():
@@ -212,11 +215,22 @@ def run_backtest(
 
     import bisect
     ROLLING_WEEKS = 52
-    bars_rows = bars_1h.select(["timestamp", "close"]).to_numpy()
+    
+    # Extract volume data if version 0.2 is used
+    if signal_version == "0.2":
+        bars_rows = bars_1h.select(["timestamp", "close", "volume", "volume_sma"]).to_numpy()
+    else:
+        bars_rows = bars_1h.select(["timestamp", "close"]).to_numpy()
 
-    for ts_ms_raw, close_raw in bars_rows:
-        ts_ms: int = int(ts_ms_raw)
-        close: float = float(close_raw)
+    for row_vals in bars_rows:
+        ts_ms: int = int(row_vals[0])
+        close: float = float(row_vals[1])
+        
+        current_volume: float | None = None
+        volume_sma: float | None = None
+        if signal_version == "0.2":
+            current_volume = float(row_vals[2])
+            volume_sma = float(row_vals[3]) if not pl.Series([row_vals[3]]).is_null()[0] else None
 
         # -- Update rolling bounds weekly (O(log n) binary search instead of full DF filter) --
         week_start = (ts_ms // _MS_PER_WEEK) * _MS_PER_WEEK
@@ -243,7 +257,10 @@ def run_backtest(
         # -- Gather RSI values: O(log n) binary search lookup --
         rsi_by_tf = _align_rsi_fast(rsi_lookup, ts_ms)
 
-        # -- Evaluate Signal 0.1 --
+        # -- Evaluate Signal --
+        from src.config.settings import SR_PROXIMITY_PCT
+        actual_proximity = proximity_pct if proximity_pct is not None else SR_PROXIMITY_PCT
+        
         signal: SignalResult = evaluate_signal(
             current_price=close,
             current_timestamp_ms=ts_ms,
@@ -251,6 +268,10 @@ def run_backtest(
             rsi_by_tf=rsi_by_tf,
             l_price=l_price,
             in_position=in_position,
+            proximity_pct=actual_proximity,
+            version=signal_version,
+            current_volume=current_volume,
+            volume_sma=volume_sma,
         )
 
         # -- Process Buy signal --
@@ -333,6 +354,13 @@ def run_backtest(
     winning = [t for t in completed_trades if (t.pnl or 0) > 0]
     losing = [t for t in completed_trades if (t.pnl or 0) <= 0]
     total_return_pct = ((capital - initial_capital) / initial_capital) * 100
+    
+    # Calculate isolated return (relative only to this asset's allocated slice of the capital)
+    from src.config.settings import ASSET_ALLOCATION
+    asset_frac = ASSET_ALLOCATION.get(symbol, 1.0)
+    allocated_initial_capital = initial_capital * asset_frac
+    isolated_return_pct = ((capital - initial_capital) / allocated_initial_capital) * 100.0 if allocated_initial_capital > 0 else 0.0
+
     win_rate = (len(winning) / total_trades * 100) if total_trades > 0 else 0.0
     avg_pnl = sum(t.pnl or 0 for t in completed_trades) / total_trades if total_trades > 0 else 0.0
     max_dd = _compute_max_drawdown(equity_curve)
@@ -342,6 +370,7 @@ def run_backtest(
         initial_capital=initial_capital,
         final_capital=capital,
         total_return_pct=total_return_pct,
+        isolated_return_pct=isolated_return_pct,
         total_trades=total_trades,
         winning_trades=len(winning),
         losing_trades=len(losing),
