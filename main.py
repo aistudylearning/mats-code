@@ -32,8 +32,8 @@ from src.utils.logger import get_logger
 log = get_logger("mats.main")
 
 # Default fetch window: 2018 to 2026
-_SINCE = datetime(2018, 1, 1, tzinfo=timezone.utc)
-_UNTIL = datetime(2026, 1, 1, tzinfo=timezone.utc)
+_SINCE = datetime(2017, 1, 1, tzinfo=timezone.utc)
+_UNTIL = datetime(2026, 5, 10, tzinfo=timezone.utc)
 
 
 def cmd_fetch(args: argparse.Namespace) -> None:
