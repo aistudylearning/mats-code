@@ -1,0 +1,25 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.backends._legacy:_Backend"
+
+[project]
+name = "mats-signal01"
+version = "0.1.0"
+description = "MATS Strategy A — Crypto MVP · Signal 0.1 Backtester"
+requires-python = ">=3.11"
+dependencies = [
+    "polars",
+    "pyarrow",
+    "duckdb",
+    "pandas-ta",
+    "ccxt",
+    "joblib",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
