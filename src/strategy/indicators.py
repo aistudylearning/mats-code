@@ -75,6 +75,7 @@ def is_overbought(rsi_value: float | None) -> bool:
 
 def compute_indicators_all_timeframes(
     frames: dict[str, pl.DataFrame],
+    execution_tf: str = "1h",
 ) -> dict[str, pl.DataFrame]:
     """
     Compute RSI for each timeframe DataFrame.
@@ -85,6 +86,7 @@ def compute_indicators_all_timeframes(
 
     Returns:
         Same dict with 'rsi' (and optionally 'volume_sma') column added.
+        Note: volume_sma is only computed for the execution_tf.
     """
     result: dict[str, pl.DataFrame] = {}
     for tf, df in frames.items():
@@ -93,7 +95,7 @@ def compute_indicators_all_timeframes(
             continue
         
         df_indicators = compute_rsi(df)
-        if tf == "1h":
+        if tf == execution_tf:
             df_indicators = compute_volume_sma(df_indicators)
             
         result[tf] = df_indicators

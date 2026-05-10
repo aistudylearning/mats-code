@@ -53,6 +53,7 @@ def cmd_backtest(args: argparse.Namespace) -> None:
         initial_capital=DEFAULT_INITIAL_CAPITAL,
         data_root=DATA_ROOT,
         signal_version=args.signal,
+        execution_tf=args.timeframe,
     )
     print(f"\nFinal Capital : {result.final_capital:.2f} USD")
     print(f"Total Return  : {result.total_return_pct:+.2f}% (Contribution to Portfolio)")
@@ -70,10 +71,12 @@ def cmd_portfolio(args: argparse.Namespace) -> None:
     """Run the full portfolio backtest across all MVP assets in parallel."""
     results = run_portfolio_backtest(
         total_capital=DEFAULT_INITIAL_CAPITAL,
+        symbols=MVP_ASSETS,
         data_root=DATA_ROOT,
         signal_version=args.signal,
         export_csv=args.csv,
         export_html=args.html,
+        execution_tf=args.timeframe,
     )
     for symbol, r in results.items():
         print(f"\n{symbol}:")
@@ -133,13 +136,15 @@ def main() -> None:
     # backtest command
     parser_bt = subparsers.add_parser("backtest", help="Run backtest on BTC/USDT")
     parser_bt.add_argument("--signal", choices=["0.1", "0.2"], default="0.1", help="Signal version")
-    parser_bt.add_argument("--csv", action="store_true", help="Export trades to CSV")
+    parser_bt.add_argument("--csv", action="store_true", help="Export trade log to CSV")
+    parser_bt.add_argument("--timeframe", "--tf", type=str, default="1h", choices=["15m", "30m", "1h", "2h", "4h"], help="Signal execution timeframe (default: 1h)")
 
     # portfolio command
     parser_pf = subparsers.add_parser("portfolio", help="Run portfolio backtest")
     parser_pf.add_argument("--signal", choices=["0.1", "0.2"], default="0.1", help="Signal version")
     parser_pf.add_argument("--csv", action="store_true", help="Export trades to CSV")
-    parser_pf.add_argument("--html", action="store_true", help="Export backtest report to HTML")
+    parser_pf.add_argument("--html", action="store_true", help="Export interactive HTML report")
+    parser_pf.add_argument("--timeframe", "--tf", type=str, default="1h", choices=["15m", "30m", "1h", "2h", "4h"], help="Signal execution timeframe (default: 1h)")
 
     # sweep command
     parser_sw = subparsers.add_parser("sweep", help="Sweep S/R proximity parameters")

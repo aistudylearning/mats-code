@@ -16,6 +16,7 @@ from src.config.settings import (
     ASSET_ALLOCATION,
     DEFAULT_INITIAL_CAPITAL,
     DATA_ROOT,
+    MVP_ASSETS,
 )
 from src.utils.logger import get_logger
 
@@ -23,14 +24,15 @@ log = get_logger(__name__)
 
 
 def run_portfolio_backtest(
-    symbols: list[str] | None = None,
     total_capital: float = DEFAULT_INITIAL_CAPITAL,
+    symbols: list[str] = MVP_ASSETS,
     data_root: str = DATA_ROOT,
-    n_jobs: int = -1,
     signal_version: str = "0.1",
     proximity_pct: float | None = None,
+    n_jobs: int = -1,
     export_csv: bool = False,
     export_html: bool = False,
+    execution_tf: str = "1h",
 ) -> dict[str, BacktestResult]:
     """
     Run backtests for all specified assets in parallel and aggregate results.
@@ -53,7 +55,7 @@ def run_portfolio_backtest(
     log.info(f"Starting portfolio backtest | capital={total_capital:.2f} | assets={symbols}")
 
     results_list: list[BacktestResult] = Parallel(n_jobs=n_jobs)(
-        delayed(run_backtest)(symbol, total_capital, data_root, signal_version, proximity_pct)
+        delayed(run_backtest)(symbol, total_capital, data_root, signal_version, proximity_pct, execution_tf=execution_tf)
         for symbol in symbols
     )
 

@@ -35,8 +35,8 @@ log = get_logger(__name__)
 _CCXT_COLS = ["timestamp", "open", "high", "low", "close", "volume"]
 
 # Maximum number of concurrent API requests.
-# Binance allows ~20 req/s on public endpoints; 8 is safe with margin.
-_MAX_CONCURRENT = 8
+# Binance allows ~20 req/s on public endpoints; 16 gives headroom.
+_MAX_CONCURRENT = 16
 
 
 def _asset_to_path_name(symbol: str) -> str:
@@ -53,36 +53,40 @@ async def _fetch_ohlcv_async(
     until_ms: int,
     root: str,
     batch_size: int = 1000,
-) -> pl.DataFrame:
+) -> tuple[str, str, pl.DataFrame]:
     """
     Async fetch of a single (symbol, timeframe) combination.
-    The semaphore limits concurrency to avoid rate-limit bans.
-    Only missing gaps between since_ms and until_ms are fetched.
+
+    Phase 1 (no semaphore, threaded): parallel disk reads via asyncio.to_thread().
+    Phase 2 (semaphore):              only the Binance API calls are rate-limited.
+
+    Returns (symbol, timeframe, df) so the caller can save without re-indexing.
     """
+    # --- Phase 1: Gap detection (non-blocking, runs fully in parallel) ---
+    from src.data.storage import load_ohlcv
+    existing_df = await asyncio.to_thread(load_ohlcv, symbol, timeframe, root)
+
+    gaps_to_fetch = []
+    if existing_df.is_empty():
+        gaps_to_fetch.append((since_ms, until_ms))
+    else:
+        min_ts = existing_df["timestamp"].min()
+        max_ts = existing_df["timestamp"].max()
+        if since_ms < min_ts:
+            gaps_to_fetch.append((since_ms, min_ts - 1))
+        if max_ts < until_ms:
+            gaps_to_fetch.append((max_ts + 1, until_ms))
+
+    if not gaps_to_fetch:
+        log.info(f"  ✓ {symbol} {timeframe}: Up to date")
+        return symbol, timeframe, pl.DataFrame(schema={c: pl.Float64 for c in _CCXT_COLS})
+
+    log.info(f"  → Fetching {symbol} {timeframe} ({len(gaps_to_fetch)} gap(s)) ...")
+
+    # --- Phase 2: API calls (rate-limited via semaphore) ---
+    all_new_rows: list[list] = []
+
     async with semaphore:
-        log.info(f"  → Checking {symbol} {timeframe} ...")
-        
-        from src.data.storage import load_ohlcv
-        existing_df = load_ohlcv(symbol, timeframe, root=root)
-        
-        gaps_to_fetch = []
-        if existing_df.is_empty():
-            gaps_to_fetch.append((since_ms, until_ms))
-        else:
-            min_ts = existing_df["timestamp"].min()
-            max_ts = existing_df["timestamp"].max()
-            
-            if since_ms < min_ts:
-                gaps_to_fetch.append((since_ms, min_ts - 1))
-            if max_ts < until_ms:
-                gaps_to_fetch.append((max_ts + 1, until_ms))
-                
-        if not gaps_to_fetch:
-            log.info(f"  ✓ {symbol} {timeframe}: Up to date")
-            return pl.DataFrame(schema={c: pl.Float64 for c in _CCXT_COLS})
-            
-        all_new_rows: list[list] = []
-        
         for gap_start, gap_end in gaps_to_fetch:
             current_since = gap_start
             while current_since < gap_end:
@@ -94,29 +98,28 @@ async def _fetch_ohlcv_async(
                 )
                 if not raw:
                     break
-    
-                # Filter rows beyond gap_end
+
                 raw = [r for r in raw if r[0] <= gap_end]
                 if not raw:
                     break
-                    
+
                 all_new_rows.extend(raw)
-    
+
                 if len(raw) < batch_size:
                     break
-    
-                current_since = raw[-1][0] + 1  # advance past last fetched timestamp
-                
-        if not all_new_rows:
-            log.warning(f"  No new data returned for {symbol} {timeframe}")
-            return pl.DataFrame(schema={c: pl.Float64 for c in _CCXT_COLS})
 
-        df = pl.DataFrame(all_new_rows, schema=_CCXT_COLS, orient="row")
-        df = df.with_columns(pl.col("timestamp").cast(pl.Int64))
-        df = df.unique(subset=["timestamp"]).sort("timestamp")
+                current_since = raw[-1][0] + 1
 
-        log.info(f"  ✓ {symbol} {timeframe}: Fetched {len(df)} new candles")
-        return df
+    if not all_new_rows:
+        log.warning(f"  No new data returned for {symbol} {timeframe}")
+        return symbol, timeframe, pl.DataFrame(schema={c: pl.Float64 for c in _CCXT_COLS})
+
+    df = pl.DataFrame(all_new_rows, schema=_CCXT_COLS, orient="row")
+    df = df.with_columns(pl.col("timestamp").cast(pl.Int64))
+    df = df.unique(subset=["timestamp"]).sort("timestamp")
+
+    log.info(f"  ✓ {symbol} {timeframe}: Fetched {len(df)} new candles")
+    return symbol, timeframe, df
 
 
 def _save_parquet(df: pl.DataFrame, symbol: str, timeframe: str, root: str) -> None:
@@ -156,7 +159,12 @@ async def _fetch_all_async(
 ) -> None:
     """
     Fetch all (symbol, timeframe) combinations concurrently and save to parquet.
-    Uses a single shared exchange connection and a semaphore for rate limiting.
+
+    Improvements:
+    - Phase 1 disk reads use asyncio.to_thread() (non-blocking).
+    - Semaphore only gates actual Binance API calls.
+    - Results are saved to disk immediately as they complete (asyncio.as_completed),
+      overlapping disk writes with ongoing API fetches.
     """
     since_ms = int(since_dt.timestamp() * 1000)
     until_ms = int(until_dt.timestamp() * 1000)
@@ -165,7 +173,9 @@ async def _fetch_all_async(
     semaphore = asyncio.Semaphore(_MAX_CONCURRENT)
 
     tasks = [
-        _fetch_ohlcv_async(exchange, semaphore, symbol, tf, since_ms, until_ms, root)
+        asyncio.ensure_future(
+            _fetch_ohlcv_async(exchange, semaphore, symbol, tf, since_ms, until_ms, root)
+        )
         for symbol in symbols
         for tf in timeframes
     ]
@@ -177,26 +187,24 @@ async def _fetch_all_async(
         f"| concurrency={_MAX_CONCURRENT}"
     )
 
-    results = await asyncio.gather(*tasks, return_exceptions=True)
+    # Save each result immediately as it completes (overlaps with ongoing fetches)
+    completed = 0
+    for coro in asyncio.as_completed(tasks):
+        try:
+            symbol, tf, df = await coro
+            if not df.is_empty():
+                await asyncio.to_thread(_save_parquet, df, symbol, tf, root)
+            completed += 1
+            if completed % 50 == 0:
+                log.info(f"  Progress: {completed}/{len(tasks)} tasks done")
+        except Exception as e:
+            log.error(f"  FAILED task: {e}")
+            completed += 1
 
     await exchange.close()
 
     elapsed = time.perf_counter() - t0
-    log.info(f"Fetch complete in {elapsed:.1f}s — saving to parquet ...")
-
-    # Save results
-    idx = 0
-    for symbol in symbols:
-        for tf in timeframes:
-            result = results[idx]
-            idx += 1
-            if isinstance(result, Exception):
-                log.error(f"  FAILED {symbol} {tf}: {result}")
-                continue
-            if not result.is_empty():
-                _save_parquet(result, symbol, tf, root)
-
-    log.info("All data saved.")
+    log.info(f"Fetch complete in {elapsed:.1f}s — all data saved.")
 
 
 def fetch_all_parallel(

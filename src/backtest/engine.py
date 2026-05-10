@@ -139,6 +139,7 @@ def run_backtest(
     data_root: str = DATA_ROOT,
     signal_version: str = "0.1",
     proximity_pct: float | None = None,
+    execution_tf: str = "1h",
 ) -> BacktestResult:
     """
     Run a full Signal backtest for a single asset.
@@ -165,14 +166,14 @@ def run_backtest(
         else:
             log.warning(f"  No data for {tf} — skipping")
 
-    if "1h" not in frames or frames["1h"].is_empty():
-        log.error("1H data is required for the signal execution timeframe — aborting")
-        raise ValueError("Missing 1H OHLCV data")
+    if execution_tf not in frames or frames[execution_tf].is_empty():
+        log.error(f"{execution_tf.upper()} data is required for the signal execution timeframe — aborting")
+        raise ValueError(f"Missing {execution_tf.upper()} OHLCV data")
 
     # ------------------------------------------------------------------
-    # 2. Compute RSI and Indicators for all timeframes
+    # 2. Compute indicators for all timeframes
     # ------------------------------------------------------------------
-    frames_with_indicators = compute_indicators_all_timeframes(frames)
+    frames_with_indicators = compute_indicators_all_timeframes(frames, execution_tf=execution_tf)
 
     # ------------------------------------------------------------------
     # 3. Build all S/R zones (Algorithm A, all timeframes)
@@ -182,9 +183,9 @@ def run_backtest(
     all_zones_sorted = sorted(all_zones, key=lambda z: z.bar_active_from)
 
     # ------------------------------------------------------------------
-    # 4. Main backtest loop: iterate over 1H bars
+    # 4. Main backtest loop: iterate over execution_tf bars
     # ------------------------------------------------------------------
-    bars_1h = frames_with_indicators["1h"]
+    bars_exec = frames_with_indicators[execution_tf]
     weekly_df = frames.get("1w", pl.DataFrame())
 
     # Pre-compute RSI lookup tables — built once, used 17k+ times
@@ -216,11 +217,12 @@ def run_backtest(
     import bisect
     ROLLING_WEEKS = 52
     
-    # Extract volume data if version 0.2 is used
+    # 4. Main backtest loop: iterate over execution_tf bars
+    bars_rows = []
     if signal_version == "0.2":
-        bars_rows = bars_1h.select(["timestamp", "close", "volume", "volume_sma"]).to_numpy()
+        bars_rows = bars_exec.select(["timestamp", "close", "volume", "volume_sma"]).to_numpy()
     else:
-        bars_rows = bars_1h.select(["timestamp", "close"]).to_numpy()
+        bars_rows = bars_exec.select(["timestamp", "close"]).to_numpy()
 
     for row_vals in bars_rows:
         ts_ms: int = int(row_vals[0])
@@ -333,16 +335,17 @@ def run_backtest(
 
     # Close any open position at last bar (mark-to-market, no friction)
     if current_trade is not None:
-        last_price = bars_1h["close"][-1]
+        last_price = bars_exec["close"][-1]
         pnl = compute_pnl(
             entry_price=current_trade.entry_price,
             exit_price=last_price,
             position_size_usd=current_trade.position_size_usd,
         )
-        current_trade.exit_timestamp_ms = bars_1h["timestamp"][-1]
         current_trade.exit_price = last_price
-        current_trade.pnl = pnl
+        current_trade.effective_exit_price = last_price
+        current_trade.exit_timestamp_ms = bars_exec["timestamp"][-1]
         current_trade.exit_reason = "end_of_data"
+        current_trade.pnl = pnl
         capital += pnl
         completed_trades.append(current_trade)
         log.info(f"  End-of-data close @ {last_price:.2f} | pnl={pnl:+.2f}")
