@@ -71,6 +71,7 @@ class BacktestResult:
     avg_pnl_per_trade: float
     max_drawdown_pct: float
     trades: list[Trade] = field(default_factory=list)
+    sr_zones: list[SRZone] = field(default_factory=list)
 
 
 def _build_rsi_lookup(
@@ -381,6 +382,7 @@ def run_backtest(
         avg_pnl_per_trade=avg_pnl,
         max_drawdown_pct=max_dd,
         trades=completed_trades,
+        sr_zones=all_zones,
     )
 
     log.info(

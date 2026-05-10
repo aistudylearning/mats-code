@@ -21,6 +21,9 @@ env/
 # Data files (parquet data is fetched, not committed)
 data/hot/data/**/*.parquet
 
+#Output files
+output/*.*
+
 # DuckDB
 *.duckdb
 *.duckdb.wal

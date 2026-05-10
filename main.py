@@ -14,6 +14,9 @@ Usage:
 
   # Step 4: Run parameter sweep to test different S/R proximity values
   python3 main.py sweep --signal 0.2
+
+  # Step 5: Regenerate HTML report from the latest cached backtest results
+  python3 main.py report
 """
 from __future__ import annotations
 
@@ -93,9 +96,36 @@ def cmd_portfolio(args: argparse.Namespace) -> None:
         for symbol, r in results.items():
             print(f"  [{tf}] {symbol}: {r.total_return_pct:+.2f}% return | {r.total_trades} trades")
 
+    # Cache the results for fast report generation later
+    import joblib
+    import os
+    os.makedirs("output", exist_ok=True)
+    cache_path = os.path.join("output", "latest_results.pkl")
+    joblib.dump(all_tf_results, cache_path)
+    log.info(f"Saved backtest results cache to: {cache_path}")
+
     if args.html:
         from src.utils.html_exporter import export_multi_tf_html
         export_multi_tf_html(all_tf_results, data_root=DATA_ROOT)
+
+
+def cmd_report(args: argparse.Namespace) -> None:
+    """Generate an HTML report directly from the most recently cached backtest results."""
+    import joblib
+    import os
+    cache_path = os.path.join("output", "latest_results.pkl")
+    
+    if not os.path.exists(cache_path):
+        log.error(f"Cache file not found at {cache_path}. Please run 'python3 main.py portfolio' first.")
+        return
+        
+    log.info(f"Loading cached backtest results from {cache_path}...")
+    try:
+        all_tf_results = joblib.load(cache_path)
+        from src.utils.html_exporter import export_multi_tf_html
+        export_multi_tf_html(all_tf_results, data_root=DATA_ROOT)
+    except Exception as e:
+        log.error(f"Failed to load cache: {e}")
 
 
 def cmd_sweep(args: argparse.Namespace) -> None:
@@ -168,6 +198,9 @@ def main() -> None:
     parser_sw = subparsers.add_parser("sweep", help="Sweep S/R proximity parameters")
     parser_sw.add_argument("--signal", choices=["0.1", "0.2"], default="0.1", help="Signal version")
 
+    # report command
+    parser_rp = subparsers.add_parser("report", help="Regenerate HTML report from cached backtest results")
+
     args = parser.parse_args()
 
     commands = {
@@ -175,6 +208,7 @@ def main() -> None:
         "backtest": cmd_backtest,
         "portfolio": cmd_portfolio,
         "sweep": cmd_sweep,
+        "report": cmd_report,
     }
 
     commands[args.command](args)
