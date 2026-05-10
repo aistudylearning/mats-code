@@ -68,23 +68,34 @@ def cmd_backtest(args: argparse.Namespace) -> None:
 
 
 def cmd_portfolio(args: argparse.Namespace) -> None:
-    """Run the full portfolio backtest across all MVP assets in parallel."""
-    results = run_portfolio_backtest(
-        total_capital=DEFAULT_INITIAL_CAPITAL,
-        symbols=MVP_ASSETS,
-        data_root=DATA_ROOT,
-        signal_version=args.signal,
-        export_csv=args.csv,
-        export_html=args.html,
-        execution_tf=args.timeframe,
-    )
-    for symbol, r in results.items():
-        print(f"\n{symbol}:")
-        print(f"  Return (Port): {r.total_return_pct:+.2f}%")
-        print(f"  Return (Iso) : {r.isolated_return_pct:+.2f}%")
-        print(f"  Trades       : {r.total_trades}")
-        print(f"  Win Rate     : {r.win_rate_pct:.1f}%")
-        print(f"  Max DD   : {r.max_drawdown_pct:.2f}%")
+    """Run the full portfolio backtest across all MVP assets, optionally across multiple timeframes."""
+    _VALID_TFS = ["15m", "30m", "1h", "2h", "4h"]
+    timeframes = args.timeframe if isinstance(args.timeframe, list) else [args.timeframe]
+    invalid = [tf for tf in timeframes if tf not in _VALID_TFS]
+    if invalid:
+        print(f"Error: invalid timeframe(s): {invalid}. Choose from {_VALID_TFS}")
+        return
+
+    # Run one full portfolio backtest per requested timeframe
+    all_tf_results: dict[str, dict] = {}
+    for tf in timeframes:
+        log.info(f"Running portfolio backtest for timeframe: {tf}")
+        results = run_portfolio_backtest(
+            total_capital=DEFAULT_INITIAL_CAPITAL,
+            symbols=MVP_ASSETS,
+            data_root=DATA_ROOT,
+            signal_version=args.signal,
+            export_csv=args.csv,
+            export_html=False,   # handled below for multi-tf
+            execution_tf=tf,
+        )
+        all_tf_results[tf] = results
+        for symbol, r in results.items():
+            print(f"  [{tf}] {symbol}: {r.total_return_pct:+.2f}% return | {r.total_trades} trades")
+
+    if args.html:
+        from src.utils.html_exporter import export_multi_tf_html
+        export_multi_tf_html(all_tf_results, data_root=DATA_ROOT)
 
 
 def cmd_sweep(args: argparse.Namespace) -> None:
@@ -144,7 +155,14 @@ def main() -> None:
     parser_pf.add_argument("--signal", choices=["0.1", "0.2"], default="0.1", help="Signal version")
     parser_pf.add_argument("--csv", action="store_true", help="Export trades to CSV")
     parser_pf.add_argument("--html", action="store_true", help="Export interactive HTML report")
-    parser_pf.add_argument("--timeframe", "--tf", type=str, default="1h", choices=["15m", "30m", "1h", "2h", "4h"], help="Signal execution timeframe (default: 1h)")
+    parser_pf.add_argument(
+        "--timeframe", "--tf",
+        type=str,
+        nargs="+",
+        default=["1h"],
+        metavar="TF",
+        help="One or more signal execution timeframes (e.g. --timeframe 15m 1h 4h). Choices: 15m 30m 1h 2h 4h",
+    )
 
     # sweep command
     parser_sw = subparsers.add_parser("sweep", help="Sweep S/R proximity parameters")
