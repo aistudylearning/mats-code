@@ -5,25 +5,6 @@ from src.strategy.signals import evaluate_signal
 from src.strategy.sr_levels import SRZone
 
 
-def _make_zone(price: float, kind: str, timeframes: list[str], weight: int) -> SRZone:
-    tfs_weights = {"1h": 1, "4h": 2, "1d": 3, "1w": 4, "1M": 5}
-    z = SRZone(
-        price=price,
-        kind=kind,
-        timeframe=timeframes[0],
-        weight=weight,
-        bar_active_from=0,
-        contributing_timeframes=timeframes,
-        combined_weight=weight,
-    )
-    return z
-
-
-# A high-conviction support zone (weight=5) at price 100
-HC_SUPPORT = _make_zone(100.0, "support", ["1d", "4h"], combined_weight=5, weight=5)
-# A high-conviction resistance zone (weight=5) at price 120
-HC_RESISTANCE = _make_zone(120.0, "resistance", ["1d", "4h"], combined_weight=5, weight=5)
-
 
 def _make_zone(price: float, kind: str, timeframes: list[str], combined_weight: int, weight: int) -> SRZone:
     z = SRZone(

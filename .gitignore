@@ -20,6 +20,7 @@ env/
 
 # Data files (parquet data is fetched, not committed)
 data/hot/data/**/*.parquet
+data.zip
 
 #Output files
 output/*.*
@@ -38,3 +39,5 @@ Thumbs.db
 
 # Logs
 *.log
+running_manytimeframes.*.txt
+backtesting_10timeframes.*.txt

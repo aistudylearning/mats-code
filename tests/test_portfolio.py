@@ -87,9 +87,10 @@ def test_position_fraction_clamped_0_to_1():
 
 
 def test_position_size_usd_btc():
-    """BTC gets 50% of capital. Size = AC_i × position_fraction."""
+    """BTC gets 1/50 = 2% of capital. Size = AC_i × position_fraction."""
     total_capital = 10000.0
-    # Near LPrice → fraction should be close to 1.0 → size ≈ 5000
+    # AC_i = 10000 × (1/50) = 200 USD
+    # Near LPrice → fraction should be close to 1.0 → size ≈ 200 × 0.9 = 180
     size = compute_position_size_usd(
         symbol="BTC/USDT",
         current_price=12500.0,
@@ -97,5 +98,6 @@ def test_position_size_usd_btc():
         l_price=12400.0,
         u_price=57600.0,
     )
-    assert size >= 4000.0, f"Expected near-full BTC allocation, got {size}"
-    assert size <= 5000.0
+    ac_i = total_capital / 50  # 200 USD
+    assert size >= ac_i * 0.8, f"Expected near-full BTC allocation (~{ac_i:.0f}), got {size}"
+    assert size <= ac_i
