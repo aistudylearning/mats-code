@@ -24,30 +24,34 @@ EXCHANGE_ID = "binance"
 # ---------------------------------------------------------------------------
 # Timeframes (ordered weakest → strongest for S/R weighting)
 # ---------------------------------------------------------------------------
-TIMEFRAMES = ["15m", "30m", "1h", "2h", "4h", "1d", "1w", "1M"]
+TIMEFRAMES = ["1m", "5m", "15m", "30m", "1h", "2h", "4h", "1d", "1w", "1M"]
 
 # Map ccxt timeframe strings to display names used in parquet paths
 TF_MAP = {
+    "1m":  "1M_",
+    "5m":  "5M",
     "15m": "15M",
     "30m": "30M",
-    "1h": "1H",
-    "2h": "2H",
-    "4h": "4H",
-    "1d": "1D",
-    "1w": "1W",
-    "1M": "1M",
+    "1h":  "1H",
+    "2h":  "2H",
+    "4h":  "4H",
+    "1d":  "1D",
+    "1w":  "1W",
+    "1M":  "1MO",
 }
 
 # S/R weight per timeframe (higher TF = stronger level)
 SR_WEIGHTS = {
+    "1m":  0.1,
+    "5m":  0.15,
     "15m": 0.25,
     "30m": 0.5,
-    "1h": 1,
-    "2h": 1.5,
-    "4h": 2,
-    "1d": 3,
-    "1w": 4,
-    "1M": 5,
+    "1h":  1,
+    "2h":  1.5,
+    "4h":  2,
+    "1d":  3,
+    "1w":  4,
+    "1M":  5,
 }
 
 # Minimum combined S/R weight to be considered a High-Conviction Zone
@@ -56,8 +60,9 @@ HIGH_CONVICTION_THRESHOLD = 5
 # ---------------------------------------------------------------------------
 # Data Storage
 # ---------------------------------------------------------------------------
-# Partition scheme: data/hot/data/{ASSET}/{TF}/YYYY-MM.parquet
-DATA_ROOT = "data/hot/data"
+# WSL Environment: \\wsl.localhost\Ubuntu\home\learning\projects\mats-code
+PROJECT_ROOT = "/home/learning/projects/mats-code"
+DATA_ROOT = f"{PROJECT_ROOT}/data/hot/data"
 PARQUET_COMPRESSION = "snappy"
 
 REQUIRED_COLUMNS = ["timestamp", "open", "high", "low", "close", "volume"]

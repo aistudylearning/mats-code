@@ -83,43 +83,77 @@ async def _fetch_ohlcv_async(
 
     log.info(f"  → Fetching {symbol} {timeframe} ({len(gaps_to_fetch)} gap(s)) ...")
 
-    # --- Phase 2: API calls (rate-limited via semaphore) ---
+    # --- Phase 2: API calls (semaphore acquired per-call, not per-task) ---
     all_new_rows: list[list] = []
+    total_flushed = 0
+    _FLUSH_EVERY = 50_000  # flush to disk periodically to avoid data loss
 
-    async with semaphore:
-        for gap_start, gap_end in gaps_to_fetch:
-            current_since = gap_start
-            while current_since < gap_end:
-                raw = await exchange.fetch_ohlcv(
-                    symbol,
-                    timeframe=timeframe,
-                    since=current_since,
-                    limit=batch_size,
-                )
-                if not raw:
-                    break
+    for gap_start, gap_end in gaps_to_fetch:
+        current_since = gap_start
+        while current_since < gap_end:
+            raw = None
+            for attempt in range(5):
+                try:
+                    async with semaphore:  # held only during the API call
+                        raw = await exchange.fetch_ohlcv(
+                            symbol,
+                            timeframe=timeframe,
+                            since=current_since,
+                            limit=batch_size,
+                        )
+                    break  # success
+                except Exception as e:
+                    if attempt < 4:
+                        log.debug(f"  Retry {attempt+1}/5 for {symbol} {timeframe} | {e}")
+                        await asyncio.sleep(5)  # sleeps WITHOUT holding semaphore
+                    else:
+                        # Save whatever we have before giving up
+                        if all_new_rows:
+                            flush_df = pl.DataFrame(all_new_rows, schema=_CCXT_COLS, orient="row")
+                            flush_df = flush_df.with_columns(pl.col("timestamp").cast(pl.Int64))
+                            flush_df = flush_df.unique(subset=["timestamp"]).sort("timestamp")
+                            await asyncio.to_thread(_save_parquet, flush_df, symbol, timeframe, root)
+                            log.info(f"  ⟳ {symbol} {timeframe}: Saved {len(flush_df)} rows before failure")
+                        raise
 
-                raw = [r for r in raw if r[0] <= gap_end]
-                if not raw:
-                    break
+            if not raw:
+                break
 
-                all_new_rows.extend(raw)
+            raw = [r for r in raw if r[0] <= gap_end]
+            if not raw:
+                break
 
-                if len(raw) < batch_size:
-                    break
+            all_new_rows.extend(raw)
 
-                current_since = raw[-1][0] + 1
+            # Periodic flush: save progress to disk every _FLUSH_EVERY rows
+            if len(all_new_rows) >= _FLUSH_EVERY:
+                flush_df = pl.DataFrame(all_new_rows, schema=_CCXT_COLS, orient="row")
+                flush_df = flush_df.with_columns(pl.col("timestamp").cast(pl.Int64))
+                flush_df = flush_df.unique(subset=["timestamp"]).sort("timestamp")
+                await asyncio.to_thread(_save_parquet, flush_df, symbol, timeframe, root)
+                total_flushed += len(flush_df)
+                log.info(f"  ⟳ {symbol} {timeframe}: Flushed {len(flush_df)} rows (total: {total_flushed})")
+                all_new_rows.clear()
 
-    if not all_new_rows:
+            if len(raw) < batch_size:
+                break
+
+            current_since = raw[-1][0] + 1
+
+    # Final batch
+    if all_new_rows:
+        df = pl.DataFrame(all_new_rows, schema=_CCXT_COLS, orient="row")
+        df = df.with_columns(pl.col("timestamp").cast(pl.Int64))
+        df = df.unique(subset=["timestamp"]).sort("timestamp")
+        total_flushed += len(df)
+        log.info(f"  ✓ {symbol} {timeframe}: Fetched {total_flushed} new candles")
+        return symbol, timeframe, df
+
+    if total_flushed == 0:
         log.warning(f"  No new data returned for {symbol} {timeframe}")
-        return symbol, timeframe, pl.DataFrame(schema={c: pl.Float64 for c in _CCXT_COLS})
-
-    df = pl.DataFrame(all_new_rows, schema=_CCXT_COLS, orient="row")
-    df = df.with_columns(pl.col("timestamp").cast(pl.Int64))
-    df = df.unique(subset=["timestamp"]).sort("timestamp")
-
-    log.info(f"  ✓ {symbol} {timeframe}: Fetched {len(df)} new candles")
-    return symbol, timeframe, df
+    else:
+        log.info(f"  ✓ {symbol} {timeframe}: Fetched {total_flushed} new candles (all flushed)")
+    return symbol, timeframe, pl.DataFrame(schema={c: pl.Float64 for c in _CCXT_COLS})
 
 
 def _save_parquet(df: pl.DataFrame, symbol: str, timeframe: str, root: str) -> None:
@@ -266,17 +300,46 @@ def fetch_ohlcv(
         return pl.DataFrame(schema={c: pl.Float64 for c in _CCXT_COLS})
 
     all_new_rows: list[list] = []
-    
+    total_flushed = 0
+    _FLUSH_EVERY = 50_000
+
     for gap_start, gap_end in gaps_to_fetch:
         current_since = gap_start
         while current_since < gap_end:
-            raw = exchange.fetch_ohlcv(symbol, timeframe=timeframe, since=current_since, limit=batch_size)
+            raw = None
+            for attempt in range(5):
+                try:
+                    raw = exchange.fetch_ohlcv(symbol, timeframe=timeframe, since=current_since, limit=batch_size)
+                    break
+                except Exception as e:
+                    if attempt < 4:
+                        log.debug(f"  Retry {attempt+1}/5 for {symbol} {timeframe} | {e}")
+                        time.sleep(5)
+                    else:
+                        if all_new_rows:
+                            flush_df = pl.DataFrame(all_new_rows, schema=_CCXT_COLS, orient="row")
+                            flush_df = flush_df.with_columns(pl.col("timestamp").cast(pl.Int64))
+                            flush_df = flush_df.unique(subset=["timestamp"]).sort("timestamp")
+                            _save_parquet(flush_df, symbol, timeframe, root)
+                            log.info(f"  ⟳ {symbol} {timeframe}: Saved {len(flush_df)} rows before failure")
+                        raise
+
             if not raw:
                 break
             raw = [r for r in raw if r[0] <= gap_end]
             if not raw:
                 break
             all_new_rows.extend(raw)
+
+            if len(all_new_rows) >= _FLUSH_EVERY:
+                flush_df = pl.DataFrame(all_new_rows, schema=_CCXT_COLS, orient="row")
+                flush_df = flush_df.with_columns(pl.col("timestamp").cast(pl.Int64))
+                flush_df = flush_df.unique(subset=["timestamp"]).sort("timestamp")
+                _save_parquet(flush_df, symbol, timeframe, root)
+                total_flushed += len(flush_df)
+                log.info(f"  ⟳ {symbol} {timeframe}: Flushed {len(flush_df)} rows (total: {total_flushed})")
+                all_new_rows.clear()
+
             if len(raw) < batch_size:
                 break
             current_since = raw[-1][0] + 1

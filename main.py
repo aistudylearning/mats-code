@@ -72,8 +72,10 @@ def cmd_backtest(args: argparse.Namespace) -> None:
 
 def cmd_portfolio(args: argparse.Namespace) -> None:
     """Run the full portfolio backtest across all MVP assets, optionally across multiple timeframes."""
-    _VALID_TFS = ["15m", "30m", "1h", "2h", "4h"]
-    timeframes = args.timeframe if isinstance(args.timeframe, list) else [args.timeframe]
+    _VALID_TFS = ["1m", "5m", "15m", "30m", "1h", "2h", "4h", "1d", "1w", "1M"]
+    # Normalize case: accept '1D' → '1d', '1W' → '1w' from the CLI
+    raw_tfs = args.timeframe if isinstance(args.timeframe, list) else [args.timeframe]
+    timeframes = [tf.lower() if tf.lower() in ("1d", "1w") else tf for tf in raw_tfs]
     invalid = [tf for tf in timeframes if tf not in _VALID_TFS]
     if invalid:
         print(f"Error: invalid timeframe(s): {invalid}. Choose from {_VALID_TFS}")
@@ -178,7 +180,7 @@ def main() -> None:
     parser_bt = subparsers.add_parser("backtest", help="Run backtest on BTC/USDT")
     parser_bt.add_argument("--signal", choices=["0.1", "0.2"], default="0.1", help="Signal version")
     parser_bt.add_argument("--csv", action="store_true", help="Export trade log to CSV")
-    parser_bt.add_argument("--timeframe", "--tf", type=str, default="1h", choices=["15m", "30m", "1h", "2h", "4h"], help="Signal execution timeframe (default: 1h)")
+    parser_bt.add_argument("--timeframe", "--tf", type=str, default="1h", choices=["1m", "5m", "15m", "30m", "1h", "2h", "4h", "1d", "1w", "1M"], help="Signal execution timeframe (default: 1h)")
 
     # portfolio command
     parser_pf = subparsers.add_parser("portfolio", help="Run portfolio backtest")
@@ -191,7 +193,7 @@ def main() -> None:
         nargs="+",
         default=["1h"],
         metavar="TF",
-        help="One or more signal execution timeframes (e.g. --timeframe 15m 1h 4h). Choices: 15m 30m 1h 2h 4h",
+        help="One or more execution timeframes (e.g. --timeframe 1m 1h 1d). Choices: 1m 5m 15m 30m 1h 2h 4h 1d 1w 1M",
     )
 
     # sweep command

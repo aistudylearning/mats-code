@@ -169,7 +169,21 @@ def run_backtest(
 
     if execution_tf not in frames or frames[execution_tf].is_empty():
         log.error(f"{execution_tf.upper()} data is required for the signal execution timeframe — aborting")
-        raise ValueError(f"Missing {execution_tf.upper()} OHLCV data")
+        return BacktestResult(
+            symbol=symbol,
+            initial_capital=initial_capital,
+            final_capital=initial_capital,
+            total_return_pct=0.0,
+            isolated_return_pct=0.0,
+            total_trades=0,
+            winning_trades=0,
+            losing_trades=0,
+            win_rate_pct=0.0,
+            avg_pnl_per_trade=0.0,
+            max_drawdown_pct=0.0,
+            trades=[],
+            sr_zones=[],
+        )
 
     # ------------------------------------------------------------------
     # 2. Compute indicators for all timeframes
