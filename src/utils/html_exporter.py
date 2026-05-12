@@ -1,4 +1,5 @@
 import os
+import shutil
 from datetime import datetime, timezone
 import json
 import polars as pl
@@ -9,6 +10,21 @@ from src.data.storage import load_ohlcv
 from src.utils.logger import get_logger
 
 log = get_logger(__name__)
+
+# Google Drive reports folder — used automatically when running on Colab.
+_DRIVE_REPORTS_DIR = "/content/drive/MyDrive/trading/reports"
+
+
+def _copy_to_drive(local_path: str) -> None:
+    """If running on Colab with Drive mounted, copy the report there automatically."""
+    if not os.path.isdir(_DRIVE_REPORTS_DIR):
+        return  # Not on Colab or Drive not mounted — silently skip.
+    try:
+        dest = os.path.join(_DRIVE_REPORTS_DIR, os.path.basename(local_path))
+        shutil.copy2(local_path, dest)
+        log.info(f"📊 Report also saved to Drive: {dest}")
+    except Exception as e:
+        log.warning(f"Could not copy report to Drive: {e}")
 
 
 def generate_sparkline_data(symbol: str, data_root: str, max_points: int = 100) -> list[float]:
@@ -137,6 +153,7 @@ def export_multi_tf_html(
         f.write(html_content)
 
     log.info(f"Exported multi-timeframe HTML report to: {out_path}")
+    _copy_to_drive(out_path)
 
 
 def _get_html_template() -> str:

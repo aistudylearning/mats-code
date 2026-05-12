@@ -39,7 +39,7 @@ Copy-paste this into the **first cell** of any new Colab notebook:
 # ═══════════════════════════════════════════════════════════════════
 
 # Step 1: Install dependencies (~30 seconds)
-!pip install -q polars pyarrow duckdb pandas-ta ccxt joblib
+!pip install -q polars pyarrow duckdb pandas-ta ccxt joblib "pandas==2.2.2"
 
 # Step 2: Mount Google Drive
 from google.colab import drive
@@ -53,12 +53,17 @@ else:
     !cd /content/mats-code && git pull
 
 # Step 4: Set data root to Google Drive
-os.environ["MATS_DATA_ROOT"] = "/content/drive/MyDrive/trading/raw"
+# NOTE: The path depends on how data.zip was created:
+#   • If zipped from mats-code/ root → path includes data/hot/data
+#   • If zipped from data/hot/data/ directly → path is just trading/raw
+# Check with: !ls /content/drive/MyDrive/trading/raw
+os.environ["MATS_DATA_ROOT"] = "/content/drive/MyDrive/trading/raw/data/hot/data"
 
 # Step 5: Change to project directory
 %cd /content/mats-code
 
 print("✅ MATS ready. Data root:", os.environ["MATS_DATA_ROOT"])
+!ls $MATS_DATA_ROOT | head -5  # Should list asset folders like BTC-USDT, ETH-USDT
 ```
 
 Alternatively, use the pre-made notebook at:
@@ -129,9 +134,14 @@ setInterval(keepAlive, 60000);
 
 > _This section is a living journal. Add your observations as you use Colab._
 
-### 2026-05-12 — Initial Setup
-- [ ] First Colab session tested
-- [ ] Data folder verified on Drive
+### 2026-05-12 — Initial Setup & Lessons
+- ✅ `pandas==2.2.2` must be pinned to avoid conflicts with Colab-native tools (gradio, bqplot)
+- ✅ These are **warnings only** — MATS uses Polars, not pandas, so the conflicts are harmless
+- ⚠️ **ZIP path gotcha**: When zipping from the project root (`mats-code/`), the zip preserves
+  the full `data/hot/data/` subfolder path. After extracting to `trading/raw/`, the actual
+  parquet files end up at `trading/raw/data/hot/data/{ASSET}/`. Set `MATS_DATA_ROOT` accordingly.
+- 💡 To avoid this in future: zip from inside `data/hot/data/` so the asset folders are at the
+  zip root, and extraction to `trading/raw/` gives the clean `trading/raw/{ASSET}/` structure.
 
 <!--
 Template for adding lessons:
