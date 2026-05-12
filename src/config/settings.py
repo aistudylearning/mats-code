@@ -60,9 +60,17 @@ HIGH_CONVICTION_THRESHOLD = 5
 # ---------------------------------------------------------------------------
 # Data Storage
 # ---------------------------------------------------------------------------
+import os
+from pathlib import Path
+
 # WSL Environment: \\wsl.localhost\Ubuntu\home\learning\projects\mats-code
 PROJECT_ROOT = "/home/learning/projects/mats-code"
-DATA_ROOT = f"{PROJECT_ROOT}/data/hot/data"
+
+# Override DATA_ROOT via environment variable for Colab / other environments:
+#   export MATS_DATA_ROOT="/content/drive/MyDrive/trading/raw"
+# Falls back to the local project path when unset.
+DATA_ROOT = os.environ.get("MATS_DATA_ROOT", f"{PROJECT_ROOT}/data/hot/data")
+
 PARQUET_COMPRESSION = "snappy"
 
 REQUIRED_COLUMNS = ["timestamp", "open", "high", "low", "close", "volume"]

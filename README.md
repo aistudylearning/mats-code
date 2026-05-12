@@ -9,12 +9,13 @@ Specification: `MATS-Design-3.3.1-StrategyA-Crypto-Signal0.1-Opus4.6Thinking.md`
 
 ## Quick Start
 
-> **Setting up a new machine?** Pick the guide for your OS:  
+> **Setting up a new environment?** Pick the guide for your platform:  
 > - [Ubuntu 24.04.4 LTS — Laptop 3 (bare-metal worker)](INSTALLME.24.04.4LTS.md)  
 > - [Ubuntu 26.04 LTS — WSL on Windows (development)](INSTALLME.26.04LTS.md)  
+> - [Google Colab (ephemeral compute)](INSTALLME.Colab.md)  
 >  
-> Both guides include **rclone setup** for pulling the shared ~4–5 GB OHLCV  
-> dataset from Google Drive — no need to re-fetch from Binance.
+> **Already set up?** See the [Operational Guide (RUNME.md)](RUNME.md) for  
+> which tasks to run on which environment.
 
 ### 1. Install dependencies (Python 3.11+)
 
