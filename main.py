@@ -47,6 +47,11 @@ def cmd_fetch(args: argparse.Namespace) -> None:
         root=DATA_ROOT,
     )
 
+    # After fetch: delete stale Drive zip, re-zip locally, upload via rclone.
+    # Skipped automatically on Colab / machines without rclone.
+    from src.utils.drive_sync import run_post_fetch_sync
+    run_post_fetch_sync(DATA_ROOT)
+
 
 def cmd_backtest(args: argparse.Namespace) -> None:
     """Run a single-asset backtest."""
