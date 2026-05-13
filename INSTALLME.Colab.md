@@ -29,10 +29,18 @@ rclone mkdir gdrive:trading/checkpoints
 
 ---
 
-## 2. Master Setup Cell (Run Every Session — One Copy-Paste)
+## 2. Running a Colab Session
 
-Copy-paste the entire block below into the **first cell** of any new Colab notebook.
-It handles everything automatically:
+### Option A: Ready-to-Run Notebook (Recommended)
+
+Open [`notebooks/colab_backtest.ipynb`](https://github.com/aistudylearning/mats-code/blob/main/notebooks/colab_backtest.ipynb)
+in Colab, hit **`Ctrl+F9`** (Run All), and walk away. It handles setup + backtest + report saving automatically.
+
+> 📓 **Tip**: Upload the notebook to `My Drive → trading → notebooks` so you always have it handy.
+
+### Option B: Copy-Paste into a Blank Notebook
+
+If you prefer a blank notebook, paste the block below into the **first cell**:
 
 ```python
 # ╔══════════════════════════════════════════════════════════════════╗

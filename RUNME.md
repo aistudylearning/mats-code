@@ -63,9 +63,11 @@ rclone sync gdrive:trading/raw/ data/hot/data/ --progress
 ```bash
 # On Colab:
 !python3 main.py fetch          # Update data (writes to Drive)
-!python3 main.py portfolio      # Run portfolio backtest
-!cp output/*.html "/content/drive/MyDrive/trading/reports/"
-# → View reports on phone via Google Drive app
+
+# Run portfolio backtest with real-time log saving to Drive
+!python3 -u main.py portfolio --signal 0.2 --timeframe 1m 5m 15m 30m 1h 2h 4h 1D 1W 1M --html 2>&1 | tee /content/drive/MyDrive/trading/reports/log_backtest_latest.txt
+
+# → HTML Reports auto-save to Drive now. View on phone via Google Drive app.
 ```
 
 ### 2. Code Development Cycle
