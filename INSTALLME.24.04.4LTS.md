@@ -13,7 +13,7 @@ sudo apt update && sudo apt upgrade -y
 # Install Python 3 and core utilities
 # Ubuntu 24.04 ships with Python 3.12 — fully compatible
 sudo apt install -y python3 python3-pip python3-venv python3-dev \
-                    git curl wget rsync sqlite3 jq htop tmux unzip openssh-server
+                    git curl wget rsync sqlite3 jq htop tmux unzip zip openssh-server
 
 # Ensure SSH is running (needed for L2 → L3 job dispatch)
 sudo systemctl enable ssh && sudo systemctl start ssh

@@ -23,7 +23,7 @@ sudo apt update && sudo apt upgrade -y
 # Install Python 3 and core utilities
 # Ubuntu 26.04 ships with Python 3.13+ — fully compatible
 sudo apt install -y python3 python3-pip python3-venv python3-dev \
-                    git curl wget rsync sqlite3 jq htop tmux unzip
+                    git curl wget rsync sqlite3 jq htop tmux unzip zip
 
 # SSH server is typically not needed in WSL (use Windows networking)
 # but install if you plan to accept connections from L2/L3:

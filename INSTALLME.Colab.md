@@ -177,6 +177,7 @@ setInterval(keepAlive, 60000);
 ### 2026-05-13 — Data ZIP Architecture Shift
 - ⚠️ **Issue**: Zipping 11k+ files directly on Colab from the Drive FUSE mount (`/content/drive`) is heavily throttled by Google (~4 files/sec), taking 50-90 minutes.
 - ✅ **Solution**: Moved `data.zip` creation to a post-fetch hook in `main.py` on L1/L3. The fetcher now zips the data locally (fast I/O) and uploads it as a single file to Drive via `rclone`. Colab now strictly *consumes* the zip file, dropping setup time back to ~5 minutes.
+- ⚠️ **Drive Sync Cache Gotcha**: If you run `main.py fetch` on L1 and it uploads a new `data.zip` to Drive *while* your Colab session is already open, Colab's FUSE mount will often use a cached state and won't "see" the new zip file immediately (`os.path.exists` returns False). To fix this, you must **Runtime → Restart session** to force a fresh FUSE mount.
 
 ### 2026-05-12 — Initial Setup & Lessons
 - ✅ **Do NOT pin `pandas==2.2.2`** — causes a hard conflict with `pandas-ta`.

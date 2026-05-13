@@ -51,10 +51,12 @@ def _delete_stale_zip() -> None:
             log.warning(f"rclone deletefile warning: {result.stderr.strip()}")
 
 
+import subprocess
+
 def _create_local_zip(local_data_root: str) -> str:
     """
-    Zip the local data folder. Returns path to the created zip file.
-    The zip is created in the parent of local_data_root to avoid name collisions.
+    Zip the local data folder using the OS zip command.
+    Returns path to the created zip file.
     """
     parent = os.path.dirname(local_data_root.rstrip("/"))
     zip_path = os.path.join(parent, "data.zip")
@@ -62,14 +64,16 @@ def _create_local_zip(local_data_root: str) -> str:
     log.info(f"⏳ Zipping {local_data_root} → {zip_path} ...")
     t0 = time.time()
 
+    # Use OS zip. 'cwd' ensures paths inside the zip are relative to local_data_root,
+    # NOT absolute paths like /home/learning/...
     result = subprocess.run(
         ["zip", "-qr", zip_path, "."],
-        cwd=local_data_root,       # cd into data folder so asset dirs are at zip root
+        cwd=local_data_root,
         capture_output=True,
         text=True,
     )
     if result.returncode != 0:
-        raise RuntimeError(f"zip failed:\n{result.stderr}")
+        raise RuntimeError(f"zip command failed (is 'zip' installed?). Stderr:\n{result.stderr}")
 
     elapsed = time.time() - t0
     size_mb = os.path.getsize(zip_path) / 1024 / 1024
