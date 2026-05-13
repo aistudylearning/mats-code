@@ -174,6 +174,10 @@ setInterval(keepAlive, 60000);
 
 > _This section is a living journal. Add your observations as you use Colab._
 
+### 2026-05-13 — Data ZIP Architecture Shift
+- ⚠️ **Issue**: Zipping 11k+ files directly on Colab from the Drive FUSE mount (`/content/drive`) is heavily throttled by Google (~4 files/sec), taking 50-90 minutes.
+- ✅ **Solution**: Moved `data.zip` creation to a post-fetch hook in `main.py` on L1/L3. The fetcher now zips the data locally (fast I/O) and uploads it as a single file to Drive via `rclone`. Colab now strictly *consumes* the zip file, dropping setup time back to ~5 minutes.
+
 ### 2026-05-12 — Initial Setup & Lessons
 - ✅ **Do NOT pin `pandas==2.2.2`** — causes a hard conflict with `pandas-ta`.
   The original "ERROR" about pandas was a warning only; MATS uses Polars so it is harmless.
