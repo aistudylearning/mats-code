@@ -20,6 +20,16 @@ Usage:
 """
 from __future__ import annotations
 
+import os
+
+# Fix thread oversubscription when using joblib by restricting underlying libraries
+os.environ["POLARS_MAX_THREADS"] = "1"
+os.environ["OMP_NUM_THREADS"] = "1"
+os.environ["OPENBLAS_NUM_THREADS"] = "1"
+os.environ["MKL_NUM_THREADS"] = "1"
+os.environ["VECLIB_MAXIMUM_THREADS"] = "1"
+os.environ["NUMEXPR_NUM_THREADS"] = "1"
+
 import argparse
 from datetime import datetime, timezone
 
@@ -34,6 +44,17 @@ log = get_logger("mats.main")
 # Default fetch window: 2018 to 2026
 _SINCE = datetime(2017, 1, 1, tzinfo=timezone.utc)
 _UNTIL = datetime(2026, 5, 10, tzinfo=timezone.utc)
+
+
+def get_n_jobs_for_machine(machine: str) -> int:
+    """Map the chosen machine to optimal joblib process count."""
+    mapping = {
+        "L1": 16,     # 14 cores / 18 threads — leaves 2 for OS
+        "L3": 6,      # 4 cores / 8 threads — leaves 2 for OS (always-on node)
+        "L2": 4,      # 4 cores / 4 threads — use all cores (controller node)
+        "Colab": 2,   # 2 cores typically
+    }
+    return mapping.get(machine, -1)
 
 
 def cmd_fetch(args: argparse.Namespace) -> None:
@@ -86,22 +107,20 @@ def cmd_portfolio(args: argparse.Namespace) -> None:
         print(f"Error: invalid timeframe(s): {invalid}. Choose from {_VALID_TFS}")
         return
 
-    # Run one full portfolio backtest per requested timeframe
-    all_tf_results: dict[str, dict] = {}
-    for tf in timeframes:
-        log.info(f"Running portfolio backtest for timeframe: {tf}")
-        results = run_portfolio_backtest(
-            total_capital=DEFAULT_INITIAL_CAPITAL,
-            symbols=MVP_ASSETS,
-            data_root=DATA_ROOT,
-            signal_version=args.signal,
-            export_csv=args.csv,
-            export_html=False,   # handled below for multi-tf
-            execution_tf=tf,
-        )
-        all_tf_results[tf] = results
-        for symbol, r in results.items():
-            print(f"  [{tf}] {symbol}: {r.total_return_pct:+.2f}% return | {r.total_trades} trades")
+    n_jobs = get_n_jobs_for_machine(args.machine)
+    log.info(f"Running multi-timeframe portfolio backtest | Machine: {args.machine} (n_jobs={n_jobs})")
+
+    # Delegate the parallelization of ALL (asset, timeframe) combinations to the runner
+    all_tf_results = run_portfolio_backtest(
+        total_capital=DEFAULT_INITIAL_CAPITAL,
+        symbols=MVP_ASSETS,
+        execution_tfs=timeframes,
+        data_root=DATA_ROOT,
+        signal_version=args.signal,
+        export_csv=args.csv,
+        export_html=False,   # handled below
+        n_jobs=n_jobs,
+    )
 
     # Cache the results for fast report generation later
     import joblib
@@ -145,15 +164,21 @@ def cmd_sweep(args: argparse.Namespace) -> None:
     
     results_summary = []
     
+    n_jobs = get_n_jobs_for_machine(args.machine)
     for pct in proximities:
         log.info(f"\n{'='*40}\nTesting Proximity: {pct*100:.1f}%\n{'='*40}")
-        res = run_portfolio_backtest(
+        res_dict = run_portfolio_backtest(
             total_capital=DEFAULT_INITIAL_CAPITAL,
+            symbols=MVP_ASSETS,
             data_root=DATA_ROOT,
             signal_version=args.signal,
             proximity_pct=pct,
             export_csv=False,
+            execution_tfs=["1h"],
+            n_jobs=n_jobs,
         )
+        # res_dict is {tf: {symbol: result}}
+        res = res_dict.get("1h", {})
         
         total_pnl = sum(r.final_capital - r.initial_capital for r in res.values())
         total_ret = (total_pnl / DEFAULT_INITIAL_CAPITAL) * 100
@@ -192,6 +217,7 @@ def main() -> None:
     parser_pf.add_argument("--signal", choices=["0.1", "0.2"], default="0.1", help="Signal version")
     parser_pf.add_argument("--csv", action="store_true", help="Export trades to CSV")
     parser_pf.add_argument("--html", action="store_true", help="Export interactive HTML report")
+    parser_pf.add_argument("--machine", type=str, choices=["L1", "L2", "L3", "Colab"], default="L1", help="Target machine profile for thread optimization")
     parser_pf.add_argument(
         "--timeframe", "--tf",
         type=str,
@@ -204,6 +230,7 @@ def main() -> None:
     # sweep command
     parser_sw = subparsers.add_parser("sweep", help="Sweep S/R proximity parameters")
     parser_sw.add_argument("--signal", choices=["0.1", "0.2"], default="0.1", help="Signal version")
+    parser_sw.add_argument("--machine", type=str, choices=["L1", "L2", "L3", "Colab"], default="L1", help="Target machine profile for thread optimization")
 
     # report command
     parser_rp = subparsers.add_parser("report", help="Regenerate HTML report from cached backtest results")

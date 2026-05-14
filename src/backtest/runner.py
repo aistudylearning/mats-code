@@ -26,16 +26,16 @@ log = get_logger(__name__)
 def run_portfolio_backtest(
     total_capital: float = DEFAULT_INITIAL_CAPITAL,
     symbols: list[str] = MVP_ASSETS,
+    execution_tfs: list[str] | None = None,
     data_root: str = DATA_ROOT,
     signal_version: str = "0.1",
     proximity_pct: float | None = None,
     n_jobs: int = -1,
     export_csv: bool = False,
     export_html: bool = False,
-    execution_tf: str = "1h",
-) -> dict[str, BacktestResult]:
+) -> dict[str, dict[str, BacktestResult]]:
     """
-    Run backtests for all specified assets in parallel and aggregate results.
+    Run backtests for all specified assets and timeframes in a single parallel pool.
 
     Each asset receives its own capital slice (AC_i) from total_capital.
     Cross-asset capital borrowing is not modelled in Signal 0.1.
@@ -47,43 +47,60 @@ def run_portfolio_backtest(
         n_jobs:        Number of parallel jobs (-1 = all CPU cores).
 
     Returns:
-        Dict mapping symbol → BacktestResult.
+        Dict mapping timeframe → symbol → BacktestResult.
     """
+    if execution_tfs is None:
+        execution_tfs = ["1h"]
     if symbols is None:
         symbols = list(ASSET_ALLOCATION.keys())
 
-    log.info(f"Starting portfolio backtest | capital={total_capital:.2f} | assets={symbols}")
+    # Create a flat list of tasks to ensure perfect load balancing
+    tasks = [(sym, tf) for tf in execution_tfs for sym in symbols]
+
+    log.info(f"Starting portfolio backtest | capital={total_capital:.2f} | tasks={len(tasks)} (assets={len(symbols)}, timeframes={len(execution_tfs)})")
 
     results_list: list[BacktestResult] = Parallel(n_jobs=n_jobs)(
-        delayed(run_backtest)(symbol, total_capital, data_root, signal_version, proximity_pct, execution_tf=execution_tf)
-        for symbol in symbols
+        delayed(run_backtest)(sym, total_capital, data_root, signal_version, proximity_pct, execution_tf=tf)
+        for sym, tf in tasks
     )
 
-    results: dict[str, BacktestResult] = {r.symbol: r for r in results_list}
+    # Group results by timeframe: {tf: {symbol: result}}
+    grouped_results: dict[str, dict[str, BacktestResult]] = {tf: {} for tf in execution_tfs}
+    for r, (sym, tf) in zip(results_list, tasks):
+        grouped_results[tf][sym] = r
 
-    # Portfolio-level summary
-    total_pnl = sum(r.final_capital - r.initial_capital for r in results.values())
-    total_return_pct = (total_pnl / total_capital) * 100 if total_capital > 0 else 0.0
-    total_trades = sum(r.total_trades for r in results.values())
+    # Print summary per timeframe
+    for tf in execution_tfs:
+        tf_results = grouped_results[tf]
+        total_pnl = sum(r.final_capital - r.initial_capital for r in tf_results.values())
+        total_return_pct = (total_pnl / total_capital) * 100 if total_capital > 0 else 0.0
+        total_trades = sum(r.total_trades for r in tf_results.values())
 
-    log.info(
-        f"\n{'='*50}\n"
-        f"PORTFOLIO SUMMARY\n"
-        f"{'='*50}\n"
-        f"  Assets       : {', '.join(symbols)}\n"
-        f"  Total Capital: {total_capital:.2f} USD\n"
-        f"  Total PnL    : {total_pnl:+.2f} USD\n"
-        f"  Total Return : {total_return_pct:+.2f}%\n"
-        f"  Total Trades : {total_trades}\n"
-        f"{'='*50}"
-    )
+        log.info(
+            f"\n{'='*50}\n"
+            f"SUMMARY [{tf}]\n"
+            f"{'='*50}\n"
+            f"  Assets       : {len(symbols)}\n"
+            f"  Total Capital: {total_capital:.2f} USD\n"
+            f"  Total PnL    : {total_pnl:+.2f} USD\n"
+            f"  Total Return : {total_return_pct:+.2f}%\n"
+            f"  Total Trades : {total_trades}\n"
+            f"{'='*50}"
+        )
+        for sym, r in tf_results.items():
+            print(f"  [{tf}] {sym}: {r.total_return_pct:+.2f}% return | {r.total_trades} trades")
 
     if export_csv:
         from src.utils.exporter import export_trades_to_csv
-        export_trades_to_csv(results)
+        # Flatten all timeframe results for CSV export
+        flat_results = {}
+        for tf, r_dict in grouped_results.items():
+            for sym, r in r_dict.items():
+                flat_results[f"{tf}_{sym}"] = r
+        export_trades_to_csv(flat_results)
 
     if export_html:
-        from src.utils.html_exporter import export_results_to_html
-        export_results_to_html(results, data_root=data_root)
+        from src.utils.html_exporter import export_multi_tf_html
+        export_multi_tf_html(grouped_results, data_root=data_root)
 
-    return results
+    return grouped_results

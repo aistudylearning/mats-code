@@ -154,6 +154,10 @@ def export_multi_tf_html(
 
     log.info(f"Exported multi-timeframe HTML report to: {out_path}")
     _copy_to_drive(out_path)
+    
+    # Send to Telegram (fails gracefully if tokens are not set in environment)
+    from src.utils.telegram_bot import send_report_to_telegram
+    send_report_to_telegram(out_path)
 
 
 def _get_html_template() -> str:
