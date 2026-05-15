@@ -29,6 +29,13 @@ def load_ohlcv(
     """
     Load all available parquet files for a symbol+timeframe, sorted by timestamp.
 
+    Uses pl.scan_parquet with glob for optimized lazy reading — Polars handles
+    the concat+sort in a single streaming pass instead of reading each file
+    individually into memory.
+
+    Note: .unique() deduplication is skipped because the fetch pipeline
+    (save_ohlcv) writes monthly partitions that are inherently non-overlapping.
+
     Args:
         symbol:    e.g. 'BTC/USDT'
         timeframe: ccxt string, e.g. '1h'
@@ -45,13 +52,14 @@ def load_ohlcv(
         log.warning(f"No data directory found: {base_path}")
         return pl.DataFrame()
 
+    glob_pattern = str(base_path / "*.parquet")
     files = sorted(base_path.glob("*.parquet"))
     if not files:
         log.warning(f"No parquet files in {base_path}")
         return pl.DataFrame()
 
-    frames = [pl.read_parquet(str(f)) for f in files]
-    df = pl.concat(frames).unique(subset=["timestamp"]).sort("timestamp")
+    # Lazy scan: Polars reads all files in a single optimized pass
+    df = pl.scan_parquet(glob_pattern).sort("timestamp").collect()
     log.info(f"Loaded {len(df)} rows for {symbol} {tf_label} from {len(files)} files")
     return df
 

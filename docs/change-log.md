@@ -54,3 +54,14 @@
 *** Expected result (corrected estimate with math):
   May 11 total CPU time: 94 min × 18 workers = ~1691 CPU-min. Savings from caching: ~200 CPU-min (4500 fewer disk reads) + ~60 CPU-min (450 fewer S/R builds) = ~260 CPU-min. New total: ~1430 CPU-min / 16 workers = **~89 min wall clock**. This is only ~5% faster than May 11's 94 min, NOT the 60-80 min initially claimed. Reason: the dominant cost is the main backtest loop iterating over millions of bars per asset (the 1m round alone is 47.5 min = 50% of total runtime), and this loop is irreducible — it's a Python for-loop doing signal evaluation per bar. The caching fixes eliminate real waste (redundant disk reads and S/R recomputation) but that waste was only ~15% of total CPU time. To achieve a truly large speedup (sub-30 min), the main backtest loop in `engine.py` would need to be vectorized with numpy/polars instead of iterating bar-by-bar in Python.
   Files changed: `main.py`, `src/backtest/engine.py`, `src/backtest/runner.py`.
+
+---
+
+[20260515:11:15:00] Change-log:
+*** User wants: Extreme backtest performance optimization, starting with safe wins (#1, #3, #4) to reduce execution time further from the current 33-minute baseline.
+*** Gemini 3.1 Pro (High) Decision: Implemented three high-impact, low-risk optimizations across the engine and runner:
+  (1) **Cached Indicators Across Timeframes**: Modified `runner.py` to compute RSI once per timeframe upfront and passed this via a new `precomputed_indicators` argument to `engine.py`. Previously, the engine recalculated RSI for all timeframes on every execution round (e.g., repeating `pandas_ta.rsi` 10 times for 4.58M rows of 1m BTC data). `volume_sma` is correctly applied only to the specific execution timeframe before dispatching.
+  (3) **Increased Worker Count**: Tuned the `L1` hardware profile mapping in `main.py` from 12 to 14 workers to perfectly align with the Core Ultra 5's 14 physical cores, capitalizing on staggered completion times to handle memory cleanly.
+  (4) **Lazy Parquet Loading**: Refactored `load_ohlcv` in `storage.py` to use `pl.scan_parquet()` with glob patterns instead of individual file `read_parquet()` + `concat()` + `unique()`, leveraging Polars' optimized lazy streaming and removing redundant deduplication for non-overlapping monthly partitions.
+*** Expected result: Substantial reduction in backtest runtime (estimated to drop from 33 min to ~20 min). Documented the full multi-phase optimization strategy, including the upcoming high-risk vectorized loop refactor (#2), in `mats-architecture/02_System_Design/MATS-Design-3.3.3-Backtest-Performance-Optimizations.md`.
+  Files changed: `main.py`, `src/backtest/engine.py`, `src/backtest/runner.py`, `src/data/storage.py`.

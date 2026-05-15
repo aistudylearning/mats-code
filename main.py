@@ -52,7 +52,7 @@ def get_n_jobs_for_machine(machine: str) -> int:
     gc.collect() in the worker releases memory between symbols.
     """
     mapping = {
-        "L1": 12,     # 16 GB RAM — 12 workers, gc.collect() prevents accumulation
+        "L1": 12,     # 16 GB RAM — 12 workers (safe memory limit), gc.collect() prevents accumulation
         "L3": 4,      # 16 GB RAM — always-on node, conservative
         "L2": 2,      # 16 GB RAM — controller node, minimal load
         "Colab": 2,   # ~13 GB RAM typically

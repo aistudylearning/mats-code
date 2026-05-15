@@ -143,6 +143,7 @@ def run_backtest(
     execution_tf: str = "1h",
     preloaded_frames: dict[str, pl.DataFrame] | None = None,
     precomputed_zones: list[SRZone] | None = None,
+    precomputed_indicators: dict[str, pl.DataFrame] | None = None,
 ) -> BacktestResult:
     """
     Run a full Signal backtest for a single asset.
@@ -161,6 +162,9 @@ def run_backtest(
                            When running multiple TFs for one symbol, compute
                            zones once and pass here to skip the expensive
                            detect_pivots() calls on subsequent TF runs.
+        precomputed_indicators: Optional pre-computed {tf: DataFrame_with_RSI}
+                                dict. When running multiple TFs for one symbol,
+                                RSI only needs computing once per timeframe.
 
     Returns:
         BacktestResult with all trades and summary metrics.
@@ -204,9 +208,12 @@ def run_backtest(
         )
 
     # ------------------------------------------------------------------
-    # 2. Compute indicators for all timeframes
+    # 2. Compute indicators for all timeframes (or use precomputed cache)
     # ------------------------------------------------------------------
-    frames_with_indicators = compute_indicators_all_timeframes(frames, execution_tf=execution_tf)
+    if precomputed_indicators is not None:
+        frames_with_indicators = precomputed_indicators
+    else:
+        frames_with_indicators = compute_indicators_all_timeframes(frames, execution_tf=execution_tf)
 
     # ------------------------------------------------------------------
     # 3. Build all S/R zones (Algorithm A, all timeframes) — or reuse cache

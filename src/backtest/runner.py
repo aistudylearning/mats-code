@@ -61,6 +61,7 @@ def _run_all_tfs_for_symbol(
     from src.data.storage import load_ohlcv
     from src.config.settings import TIMEFRAMES
     from src.strategy.sr_levels import build_sr_zones
+    from src.strategy.indicators import compute_rsi, compute_volume_sma
 
     # Load all TF data ONCE into RAM
     frames: dict[str, "pl.DataFrame"] = {}
@@ -72,7 +73,27 @@ def _run_all_tfs_for_symbol(
     # Compute S/R zones ONCE — they depend only on raw OHLCV, not on execution_tf
     zones = build_sr_zones(frames)
 
-    # Run all execution TFs using both caches
+    # Compute RSI ONCE per timeframe — RSI on 4.58M 1m rows takes ~2 sec;
+    # doing it 10× (once per execution TF) was pure waste.
+    # RSI depends ONLY on the close series, not on which TF is being executed.
+    base_indicators: dict[str, "pl.DataFrame"] = {}
+    for tf, df in frames.items():
+        if df.is_empty():
+            base_indicators[tf] = df
+        else:
+            base_indicators[tf] = compute_rsi(df)
+
+    # For each execution TF, create indicator set with volume_sma added
+    # only to that TF's DataFrame (needed for Signal 0.2).
+    # This is cheap — volume_sma is only computed on the execution TF frame.
+    all_indicators: dict[str, dict[str, "pl.DataFrame"]] = {}
+    for etf in execution_tfs:
+        indicators_for_etf = dict(base_indicators)  # shallow copy — shares DataFrames
+        if etf in indicators_for_etf and not indicators_for_etf[etf].is_empty():
+            indicators_for_etf[etf] = compute_volume_sma(indicators_for_etf[etf])
+        all_indicators[etf] = indicators_for_etf
+
+    # Run all execution TFs using all three caches
     results = []
     for tf in execution_tfs:
         r = run_backtest(
@@ -80,11 +101,12 @@ def _run_all_tfs_for_symbol(
             execution_tf=tf,
             preloaded_frames=frames,
             precomputed_zones=zones,
+            precomputed_indicators=all_indicators[tf],
         )
         results.append((sym, tf, r))
 
     # Release memory — critical with 50 symbols and multi-GB 1m data per symbol
-    del frames, zones
+    del frames, zones, all_indicators, base_indicators
     gc.collect()
 
     return results
