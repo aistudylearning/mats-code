@@ -141,14 +141,26 @@ def run_backtest(
     signal_version: str = "0.1",
     proximity_pct: float | None = None,
     execution_tf: str = "1h",
+    preloaded_frames: dict[str, pl.DataFrame] | None = None,
+    precomputed_zones: list[SRZone] | None = None,
 ) -> BacktestResult:
     """
     Run a full Signal backtest for a single asset.
 
     Args:
-        symbol:          e.g. 'BTC/USDT'
-        initial_capital: Starting portfolio capital in USD.
-        data_root:       Root directory for parquet data.
+        symbol:           e.g. 'BTC/USDT'
+        initial_capital:  Starting portfolio capital in USD.
+        data_root:        Root directory for parquet data.
+        preloaded_frames: Optional pre-loaded {tf: DataFrame} dict. When
+                          provided, ALL disk reads are skipped entirely.
+                          Pass this from the runner when running all TFs
+                          for the same symbol to avoid re-reading parquet
+                          files on every TF iteration.
+        precomputed_zones: Optional pre-computed S/R zones. S/R zones depend
+                           only on raw OHLCV frames, NOT on execution_tf.
+                           When running multiple TFs for one symbol, compute
+                           zones once and pass here to skip the expensive
+                           detect_pivots() calls on subsequent TF runs.
 
     Returns:
         BacktestResult with all trades and summary metrics.
@@ -156,16 +168,22 @@ def run_backtest(
     log.info(f"=== Starting backtest for {symbol} ===")
 
     # ------------------------------------------------------------------
-    # 1. Load all OHLCV timeframes from parquet
+    # 1. Load all OHLCV timeframes from parquet (or use preloaded cache)
     # ------------------------------------------------------------------
-    frames: dict[str, pl.DataFrame] = {}
-    for tf in TIMEFRAMES:
-        df = load_ohlcv(symbol, tf, root=data_root)
-        if not df.is_empty():
-            frames[tf] = df
+    if preloaded_frames is not None:
+        # Caller loaded data once — skip all disk reads
+        frames = preloaded_frames
+        for tf, df in frames.items():
             log.info(f"  Loaded {tf}: {len(df)} rows")
-        else:
-            log.warning(f"  No data for {tf} — skipping")
+    else:
+        frames = {}
+        for tf in TIMEFRAMES:
+            df = load_ohlcv(symbol, tf, root=data_root)
+            if not df.is_empty():
+                frames[tf] = df
+                log.info(f"  Loaded {tf}: {len(df)} rows")
+            else:
+                log.warning(f"  No data for {tf} — skipping")
 
     if execution_tf not in frames or frames[execution_tf].is_empty():
         log.error(f"{execution_tf.upper()} data is required for the signal execution timeframe — aborting")
@@ -191,9 +209,12 @@ def run_backtest(
     frames_with_indicators = compute_indicators_all_timeframes(frames, execution_tf=execution_tf)
 
     # ------------------------------------------------------------------
-    # 3. Build all S/R zones (Algorithm A, all timeframes)
+    # 3. Build all S/R zones (Algorithm A, all timeframes) — or reuse cache
     # ------------------------------------------------------------------
-    all_zones: list[SRZone] = build_sr_zones(frames)
+    if precomputed_zones is not None:
+        all_zones = precomputed_zones
+    else:
+        all_zones = build_sr_zones(frames)
     # Pre-sort zones by bar_active_from once for fast sequential filtering
     all_zones_sorted = sorted(all_zones, key=lambda z: z.bar_active_from)
 

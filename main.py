@@ -22,13 +22,11 @@ from __future__ import annotations
 
 import os
 
-# Fix thread oversubscription when using joblib by restricting underlying libraries
-os.environ["POLARS_MAX_THREADS"] = "1"
-os.environ["OMP_NUM_THREADS"] = "1"
-os.environ["OPENBLAS_NUM_THREADS"] = "1"
-os.environ["MKL_NUM_THREADS"] = "1"
-os.environ["VECLIB_MAXIMUM_THREADS"] = "1"
-os.environ["NUMEXPR_NUM_THREADS"] = "1"
+# NOTE: Thread limiters (POLARS_MAX_THREADS=1, OMP_NUM_THREADS=1, etc.)
+# were removed after benchmarking showed they caused a regression from 94→133+ min.
+# n_jobs is now MEMORY-bounded (not CPU-bounded): each worker loads ~1.2 GB
+# of 1m data per symbol across 10 TFs. With 16 GB RAM on L1, max safe
+# concurrency is ~6 workers (6 × 1.2 GB ≈ 7.2 GB + OS overhead).
 
 import argparse
 from datetime import datetime, timezone
@@ -47,14 +45,19 @@ _UNTIL = datetime(2026, 5, 10, tzinfo=timezone.utc)
 
 
 def get_n_jobs_for_machine(machine: str) -> int:
-    """Map the chosen machine to optimal joblib process count."""
+    """Map the chosen machine to optimal joblib process count.
+
+    Memory-bounded: each worker holds ~1.2 GB (all 10 TFs for one symbol).
+    With 50 assets at 1m resolution, RAM is the bottleneck, not CPU.
+    gc.collect() in the worker releases memory between symbols.
+    """
     mapping = {
-        "L1": 16,     # 14 cores / 18 threads — leaves 2 for OS
-        "L3": 6,      # 4 cores / 8 threads — leaves 2 for OS (always-on node)
-        "L2": 4,      # 4 cores / 4 threads — use all cores (controller node)
-        "Colab": 2,   # 2 cores typically
+        "L1": 12,     # 16 GB RAM — 12 workers, gc.collect() prevents accumulation
+        "L3": 4,      # 16 GB RAM — always-on node, conservative
+        "L2": 2,      # 16 GB RAM — controller node, minimal load
+        "Colab": 2,   # ~13 GB RAM typically
     }
-    return mapping.get(machine, -1)
+    return mapping.get(machine, 4)
 
 
 def cmd_fetch(args: argparse.Namespace) -> None:

@@ -6,6 +6,15 @@ Spec reference: Section 1 (joblib), Section 7 (Shared Capital Pool Rule).
 Uses joblib to run backtests across assets in parallel (not across time).
 Each asset runs its own independent backtest using its own AC_i capital slice.
 Portfolio P&L = sum of all asset P&Ls.
+
+Parallelism strategy:
+    - Outer pool: one job per symbol (up to n_jobs workers), parallelized via joblib.
+    - Inner loop: all execution timeframes run SEQUENTIALLY within each worker.
+    - Rationale: the backtest engine loads ALL timeframe data per symbol for S/R
+      computation. With a flat (sym, tf) pool, each task re-reads the same files
+      from disk: 500 tasks × 10 files = 5000 disk reads. By grouping all TFs under
+      one worker per symbol, each symbol's data is loaded exactly once → 500 reads.
+      This shifts the bottleneck from 100% disk back to CPU, where it belongs.
 """
 from __future__ import annotations
 
@@ -23,6 +32,65 @@ from src.utils.logger import get_logger
 log = get_logger(__name__)
 
 
+def _run_all_tfs_for_symbol(
+    sym: str,
+    total_capital: float,
+    data_root: str,
+    signal_version: str,
+    proximity_pct: float | None,
+    execution_tfs: list[str],
+) -> list[tuple[str, str, BacktestResult]]:
+    """
+    Worker function: load all timeframes for one symbol ONCE, compute S/R
+    zones ONCE, then run all execution TF backtests sharing both caches.
+
+    Optimizations vs naive approach (one run_backtest per task):
+      - Data loading:  10 TF files read once     (not 10× per TF run)
+      - S/R zones:     detect_pivots() runs once  (not 10× per TF run)
+      - For BTC 1m (4.5M bars), this saves ~100-200 sec of Python-loop pivots
+
+    Memory management:
+      - Frames dict and zones are explicitly deleted after use
+      - gc.collect() is called to release memory before this worker
+        picks up the next symbol from the joblib pool
+
+    Returns:
+        List of (symbol, timeframe, BacktestResult) tuples.
+    """
+    import gc
+    from src.data.storage import load_ohlcv
+    from src.config.settings import TIMEFRAMES
+    from src.strategy.sr_levels import build_sr_zones
+
+    # Load all TF data ONCE into RAM
+    frames: dict[str, "pl.DataFrame"] = {}
+    for tf in TIMEFRAMES:
+        df = load_ohlcv(sym, tf, root=data_root)
+        if not df.is_empty():
+            frames[tf] = df
+
+    # Compute S/R zones ONCE — they depend only on raw OHLCV, not on execution_tf
+    zones = build_sr_zones(frames)
+
+    # Run all execution TFs using both caches
+    results = []
+    for tf in execution_tfs:
+        r = run_backtest(
+            sym, total_capital, data_root, signal_version, proximity_pct,
+            execution_tf=tf,
+            preloaded_frames=frames,
+            precomputed_zones=zones,
+        )
+        results.append((sym, tf, r))
+
+    # Release memory — critical with 50 symbols and multi-GB 1m data per symbol
+    del frames, zones
+    gc.collect()
+
+    return results
+
+
+
 def run_portfolio_backtest(
     total_capital: float = DEFAULT_INITIAL_CAPITAL,
     symbols: list[str] = MVP_ASSETS,
@@ -35,10 +103,13 @@ def run_portfolio_backtest(
     export_html: bool = False,
 ) -> dict[str, dict[str, BacktestResult]]:
     """
-    Run backtests for all specified assets and timeframes in a single parallel pool.
+    Run backtests for all specified assets and timeframes in a parallel pool.
 
     Each asset receives its own capital slice (AC_i) from total_capital.
     Cross-asset capital borrowing is not modelled in Signal 0.1.
+
+    Parallelism: n_jobs workers, each handling one symbol across all TFs.
+    This minimizes disk I/O by loading each symbol's data once per worker.
 
     Args:
         symbols:       List of symbols to backtest (defaults to all MVP assets).
@@ -54,20 +125,25 @@ def run_portfolio_backtest(
     if symbols is None:
         symbols = list(ASSET_ALLOCATION.keys())
 
-    # Create a flat list of tasks to ensure perfect load balancing
-    tasks = [(sym, tf) for tf in execution_tfs for sym in symbols]
-
-    log.info(f"Starting portfolio backtest | capital={total_capital:.2f} | tasks={len(tasks)} (assets={len(symbols)}, timeframes={len(execution_tfs)})")
-
-    results_list: list[BacktestResult] = Parallel(n_jobs=n_jobs)(
-        delayed(run_backtest)(sym, total_capital, data_root, signal_version, proximity_pct, execution_tf=tf)
-        for sym, tf in tasks
+    log.info(
+        f"Starting portfolio backtest | capital={total_capital:.2f} | "
+        f"assets={len(symbols)}, timeframes={len(execution_tfs)} | "
+        f"strategy=symbol-parallel (1 disk load per symbol)"
     )
 
-    # Group results by timeframe: {tf: {symbol: result}}
+    # One job per symbol — each worker runs all TFs sequentially, loading data once
+    all_results: list[list[tuple[str, str, BacktestResult]]] = Parallel(n_jobs=n_jobs)(
+        delayed(_run_all_tfs_for_symbol)(
+            sym, total_capital, data_root, signal_version, proximity_pct, execution_tfs
+        )
+        for sym in symbols
+    )
+
+    # Flatten and regroup into {tf: {sym: result}}
     grouped_results: dict[str, dict[str, BacktestResult]] = {tf: {} for tf in execution_tfs}
-    for r, (sym, tf) in zip(results_list, tasks):
-        grouped_results[tf][sym] = r
+    for sym_results in all_results:
+        for sym, tf, r in sym_results:
+            grouped_results[tf][sym] = r
 
     # Print summary per timeframe
     for tf in execution_tfs:
@@ -92,7 +168,6 @@ def run_portfolio_backtest(
 
     if export_csv:
         from src.utils.exporter import export_trades_to_csv
-        # Flatten all timeframe results for CSV export
         flat_results = {}
         for tf, r_dict in grouped_results.items():
             for sym, r in r_dict.items():
