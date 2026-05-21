@@ -50,13 +50,17 @@ def generate_sparkline_data(symbol: str, data_root: str, max_points: int = 100) 
 def load_chart_data(symbol: str, tf: str, data_root: str, max_candles: int = 1000) -> list[dict]:
     """Load detailed candlestick data for the detailed charting modal."""
     try:
+        from src.strategy.indicators import compute_rsi
         df = load_ohlcv(symbol, tf, root=data_root)
         if df.is_empty():
             return []
         
+        # Calculate RSI before taking tail to ensure no warm-up bias
+        df_indicators = compute_rsi(df)
+        
         # Take the most recent max_candles
-        df_tail = df.tail(max_candles)
-        records = df_tail.select(["timestamp", "open", "high", "low", "close"]).to_dicts()
+        df_tail = df_indicators.tail(max_candles)
+        records = df_tail.select(["timestamp", "open", "high", "low", "close", "rsi"]).to_dicts()
         
         # Lightweight Charts expects time in seconds for Unix timestamps
         formatted = []
@@ -66,7 +70,8 @@ def load_chart_data(symbol: str, tf: str, data_root: str, max_candles: int = 100
                 "open": r["open"],
                 "high": r["high"],
                 "low": r["low"],
-                "close": r["close"]
+                "close": r["close"],
+                "rsi": r["rsi"] if r["rsi"] is not None else None
             })
         return formatted
     except Exception as e:
@@ -75,44 +80,58 @@ def load_chart_data(symbol: str, tf: str, data_root: str, max_candles: int = 100
 
 
 def _build_assets_data(results: dict[str, BacktestResult], data_root: str, tf: str) -> list[dict]:
-    """Build the asset data list for a single timeframe."""
+    """Build the asset data list for a single timeframe.
+    Uses ultra-compact array structures to keep the monolithic HTML size well under 20MB,
+    enabling direct viewing on mobile and desktop without exceeding Telegram bot upload limits.
+    """
     mcap_rank = {sym: idx + 1 for idx, sym in enumerate(MVP_ASSETS)}
     assets_data = []
     for symbol, res in results.items():
         sparkline = generate_sparkline_data(symbol, data_root)
         
-        # Format S/R Zones
+        # Format S/R Zones: [price, kind_index (0=support, 1=resistance), weight]
         sr_data = [
-            {"price": z.price, "kind": z.kind, "weight": z.combined_weight} 
+            [z.price, 0 if z.kind == "support" else 1, z.combined_weight]
             for z in res.sr_zones
         ]
         
-        # Format Trade History
+        # Format Trade History: [entry_time, entry_price, exit_time, exit_price, pnl, exit_reason]
         trades_data = []
         for t in res.trades:
-            trades_data.append({
-                "entry_time": t.entry_timestamp_ms / 1000,
-                "entry_price": t.entry_price,
-                "exit_time": (t.exit_timestamp_ms / 1000) if t.exit_timestamp_ms else None,
-                "exit_price": t.exit_price,
-                "pnl": t.pnl,
-                "exit_reason": t.exit_reason
-            })
+            trades_data.append([
+                t.entry_timestamp_ms / 1000,
+                t.entry_price,
+                (t.exit_timestamp_ms / 1000) if t.exit_timestamp_ms else None,
+                t.exit_price,
+                t.pnl,
+                t.exit_reason
+            ])
+
+        # Format Chart Data: [time, open, high, low, close, rsi]
+        chart_points = []
+        for r in load_chart_data(symbol, tf, data_root):
+            chart_points.append([
+                r["time"],
+                r["open"],
+                r["high"],
+                r["low"],
+                r["close"],
+                r["rsi"]
+            ])
 
         assets_data.append({
-            "symbol": symbol,
-            "mcap_rank": mcap_rank.get(symbol, 999),
-            "total_return": res.total_return_pct,
-            "isolated_return": res.isolated_return_pct,
-            "win_rate": res.win_rate_pct,
-            "max_dd": res.max_drawdown_pct,
-            "trades": res.total_trades,
-            "final_capital": res.final_capital,
-            "sparkline": sparkline,
-            "chart_data": load_chart_data(symbol, tf, data_root),
-            "sr_zones": sr_data,
-            "trades_history": trades_data,
-            "tradingview_url": f"https://www.tradingview.com/chart/?symbol=BINANCE:{symbol.replace('/', '')}"
+            "sym": symbol,
+            "r": mcap_rank.get(symbol, 999),
+            "ret": res.total_return_pct,
+            "iret": res.isolated_return_pct,
+            "wr": res.win_rate_pct,
+            "dd": res.max_drawdown_pct,
+            "tr": res.total_trades,
+            "cap": res.final_capital,
+            "spk": sparkline,
+            "c": chart_points,
+            "s": sr_data,
+            "t": trades_data
         })
     return assets_data
 
@@ -326,6 +345,36 @@ def _get_html_template() -> str:
 
         .rank-num { color: var(--muted); font-size: 0.9rem; }
 
+        /* ── Portfolio Summary Cards ── */
+        .portfolio-summary {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+            gap: 20px;
+            margin-bottom: 28px;
+        }
+        .stat-card {
+            background: var(--surface);
+            border: 1px solid var(--border);
+            border-radius: 12px;
+            padding: 20px;
+            backdrop-filter: blur(8px);
+            box-shadow: 0 4px 20px rgba(0,0,0,0.15);
+            display: flex;
+            flex-direction: column;
+            gap: 6px;
+        }
+        .stat-label {
+            font-size: 0.75rem;
+            color: var(--muted);
+            text-transform: uppercase;
+            letter-spacing: 0.6px;
+            font-weight: 600;
+        }
+        .stat-value {
+            font-size: 1.6rem;
+            font-weight: 700;
+        }
+
         /* ── Modal ── */
         .modal { display: none; position: fixed; inset: 0; z-index: 1000; background: rgba(0,0,0,0.8); backdrop-filter: blur(4px); align-items: center; justify-content: center; }
         .modal.active { display: flex; }
@@ -347,6 +396,8 @@ def _get_html_template() -> str:
             <p class="subtitle">MATS Strategy A · Signal Analysis · Multi-Timeframe</p>
         </div>
     </header>
+
+    <div class="portfolio-summary" id="portfolioSummary"></div>
 
     <div class="tf-tabs" id="tfTabs"></div>
 
@@ -382,6 +433,52 @@ def _get_html_template() -> str:
 
 <script>
     const multiTfData = {{MULTI_TF_DATA_JSON}};
+    
+    // Inflate compressed payload to standard objects transparently
+    for (const tf in multiTfData) {
+        multiTfData[tf] = multiTfData[tf].map(asset => {
+            const chartData = asset.c.map(c => ({
+                time: c[0],
+                open: c[1],
+                high: c[2],
+                low: c[3],
+                close: c[4],
+                rsi: c[5]
+            }));
+            
+            const tradesHistory = asset.t.map(t => ({
+                entry_time: t[0],
+                entry_price: t[1],
+                exit_time: t[2],
+                exit_price: t[3],
+                pnl: t[4],
+                exit_reason: t[5]
+            }));
+            
+            const srZones = asset.s.map(s => ({
+                price: s[0],
+                kind: s[1] === 0 ? 'support' : 'resistance',
+                weight: s[2]
+            }));
+
+            return {
+                symbol: asset.sym,
+                mcap_rank: asset.r,
+                total_return: asset.ret,
+                isolated_return: asset.iret,
+                win_rate: asset.wr,
+                max_dd: asset.dd,
+                trades: asset.tr,
+                final_capital: asset.cap,
+                sparkline: asset.spk,
+                chart_data: chartData,
+                trades_history: tradesHistory,
+                sr_zones: srZones,
+                tradingview_url: `https://www.tradingview.com/chart/?symbol=BINANCE:${asset.sym.replace('/', '')}`
+            };
+        });
+    }
+
     const timeframes = Object.keys(multiTfData);
 
     let activeTf = timeframes[0];
@@ -399,6 +496,7 @@ def _get_html_template() -> str:
             document.querySelectorAll('.tf-tab').forEach(b => b.classList.remove('active'));
             btn.classList.add('active');
             renderTable();
+            updatePortfolioSummary();
         });
         tfTabsEl.appendChild(btn);
     });
@@ -453,6 +551,45 @@ def _get_html_template() -> str:
         return `<span class="val ${cls}">${sign}${v.toFixed(2)}%</span>`;
     }
 
+    // ── Portfolio Summary Card Logic ──
+    function updatePortfolioSummary() {
+        const data = multiTfData[activeTf] || [];
+        let totalReturn = 0;
+        let totalTrades = 0;
+
+        data.forEach(asset => {
+            totalReturn += asset.total_return;
+            totalTrades += asset.trades;
+        });
+
+        const initialCapital = 10000.0;
+        const totalPnl = (totalReturn / 100) * initialCapital;
+        const finalCapital = initialCapital + totalPnl;
+
+        const summaryEl = document.getElementById('portfolioSummary');
+        const retCls = totalReturn >= 0 ? 'pos' : 'neg';
+        const sign = totalReturn > 0 ? '+' : '';
+
+        summaryEl.innerHTML = `
+            <div class="stat-card">
+                <span class="stat-label">Total Portfolio Return</span>
+                <span class="stat-value ${retCls}">${sign}${totalReturn.toFixed(2)}%</span>
+            </div>
+            <div class="stat-card">
+                <span class="stat-label">Total Portfolio PnL</span>
+                <span class="stat-value ${retCls}">${sign}${totalPnl.toFixed(2)} USD</span>
+            </div>
+            <div class="stat-card">
+                <span class="stat-label">Ending Portfolio Capital</span>
+                <span class="stat-value">${finalCapital.toFixed(2)} USD</span>
+            </div>
+            <div class="stat-card">
+                <span class="stat-label">Total Portfolio Trades</span>
+                <span class="stat-value">${totalTrades}</span>
+            </div>
+        `;
+    }
+
     // ── Render ────────────────────────────────────────────────────────────
     function renderTable() {
         const data = [...(multiTfData[activeTf] || [])];
@@ -495,15 +632,26 @@ def _get_html_template() -> str:
 
     // Initial render
     renderTable();
+    updatePortfolioSummary();
 
     // ── Chart Modals ──────────────────────────────────────────────────────
     let currentChart = null;
+    let currentRsiChart = null;
+    let currentResizeObserver = null;
 
     function closeChartModal() {
         document.getElementById('chartModal').classList.remove('active');
+        if (currentResizeObserver) {
+            currentResizeObserver.disconnect();
+            currentResizeObserver = null;
+        }
         if (currentChart) {
             currentChart.remove();
             currentChart = null;
+        }
+        if (currentRsiChart) {
+            currentRsiChart.remove();
+            currentRsiChart = null;
         }
     }
 
@@ -516,6 +664,20 @@ def _get_html_template() -> str:
 
         const container = document.getElementById('chartContainer');
         container.innerHTML = '';
+        container.style.display = 'flex';
+        container.style.flexDirection = 'column';
+        container.style.gap = '8px';
+
+        // Create separate sub-divs for synchronized Price and RSI panes
+        const priceDiv = document.createElement('div');
+        priceDiv.style.width = '100%';
+        priceDiv.style.height = '70%';
+        container.appendChild(priceDiv);
+
+        const rsiDiv = document.createElement('div');
+        rsiDiv.style.width = '100%';
+        rsiDiv.style.height = '30%';
+        container.appendChild(rsiDiv);
 
         // CRITICAL FIX: Defer chart creation until AFTER the browser has painted
         // the modal. Without this, the container has 0x0 dimensions and the chart
@@ -524,9 +686,10 @@ def _get_html_template() -> str:
             const w = container.clientWidth || 900;
             const h = container.clientHeight || 560;
 
-            currentChart = LightweightCharts.createChart(container, {
+            // 1. Create Candlestick Chart (Top Pane)
+            currentChart = LightweightCharts.createChart(priceDiv, {
                 width: w,
-                height: h,
+                height: Math.floor(h * 0.70) - 4,
                 layout: { background: { color: '#0f111a' }, textColor: '#8892aa' },
                 grid: { vertLines: { color: 'rgba(255,255,255,0.05)' }, horzLines: { color: 'rgba(255,255,255,0.05)' } },
                 crosshair: { mode: LightweightCharts.CrosshairMode.Normal },
@@ -538,6 +701,115 @@ def _get_html_template() -> str:
             });
             
             candleSeries.setData(asset.chart_data);
+
+            // 2. Create RSI Chart (Bottom Pane)
+            currentRsiChart = LightweightCharts.createChart(rsiDiv, {
+                width: w,
+                height: Math.floor(h * 0.30) - 4,
+                layout: { background: { color: '#0f111a' }, textColor: '#8892aa' },
+                grid: { vertLines: { color: 'rgba(255,255,255,0.03)' }, horzLines: { color: 'rgba(255,255,255,0.03)' } },
+                crosshair: { mode: LightweightCharts.CrosshairMode.Normal },
+                timeScale: { timeVisible: true, secondsVisible: false },
+                leftPriceScale: { visible: false },
+                rightPriceScale: {
+                    visible: true,
+                    borderVisible: false,
+                    scaleMargins: { top: 0.1, bottom: 0.1 }
+                }
+            });
+
+            const rsiSeries = currentRsiChart.addLineSeries({
+                color: '#818cf8',
+                lineWidth: 1.5,
+                crosshairMarkerVisible: true,
+                priceLineVisible: false,
+                lastValueVisible: true
+            });
+
+            const rsiData = asset.chart_data
+                .filter(d => d.rsi !== null && d.rsi !== undefined)
+                .map(d => ({ time: d.time, value: d.rsi }));
+            rsiSeries.setData(rsiData);
+
+            // Add RSI levels lines (30, 50, 70)
+            rsiSeries.createPriceLine({
+                price: 70,
+                color: 'rgba(239, 68, 68, 0.4)',
+                lineWidth: 1,
+                lineStyle: LightweightCharts.LineStyle.Dashed,
+                axisLabelVisible: true,
+                title: '70'
+            });
+
+            rsiSeries.createPriceLine({
+                price: 50,
+                color: 'rgba(255, 255, 255, 0.15)',
+                lineWidth: 1,
+                lineStyle: LightweightCharts.LineStyle.Dashed,
+                axisLabelVisible: true
+            });
+
+            rsiSeries.createPriceLine({
+                price: 30,
+                color: 'rgba(16, 185, 129, 0.4)',
+                lineWidth: 1,
+                lineStyle: LightweightCharts.LineStyle.Dashed,
+                axisLabelVisible: true,
+                title: '30'
+            });
+
+            // 3. Synchronize Zooming/Scrolling (with re-entrancy guard)
+            let syncingRange = false;
+            currentChart.timeScale().subscribeVisibleLogicalRangeChange(range => {
+                if (syncingRange) return;
+                syncingRange = true;
+                currentRsiChart.timeScale().setVisibleLogicalRange(range);
+                syncingRange = false;
+            });
+            currentRsiChart.timeScale().subscribeVisibleLogicalRangeChange(range => {
+                if (syncingRange) return;
+                syncingRange = true;
+                currentChart.timeScale().setVisibleLogicalRange(range);
+                syncingRange = false;
+            });
+
+            // 4. Synchronize Crosshair (with re-entrancy guard)
+            // Note: setCrosshairPosition(price, time, series) requires a
+            // price value, NOT pixel coords. We look up each series' value
+            // for the hovered time to position the crosshair correctly.
+            let syncingCrosshair = false;
+            currentChart.subscribeCrosshairMove(param => {
+                if (syncingCrosshair) return;
+                syncingCrosshair = true;
+                if (param.time) {
+                    const rsiPoint = param.seriesData?.get(candleSeries);
+                    const rsiVal = rsiData.find(d => d.time === param.time);
+                    if (rsiVal) currentRsiChart.setCrosshairPosition(rsiVal.value, param.time, rsiSeries);
+                } else {
+                    currentRsiChart.clearCrosshairPosition();
+                }
+                syncingCrosshair = false;
+            });
+            currentRsiChart.subscribeCrosshairMove(param => {
+                if (syncingCrosshair) return;
+                syncingCrosshair = true;
+                if (param.time) {
+                    const bar = asset.chart_data.find(d => d.time === param.time);
+                    if (bar) currentChart.setCrosshairPosition(bar.close, param.time, candleSeries);
+                } else {
+                    currentChart.clearCrosshairPosition();
+                }
+                syncingCrosshair = false;
+            });
+
+            // 5. Resize both charts when the container changes size
+            currentResizeObserver = new ResizeObserver(() => {
+                const cw = container.clientWidth;
+                const ch = container.clientHeight;
+                if (currentChart) currentChart.resize(cw, Math.floor(ch * 0.70) - 4);
+                if (currentRsiChart) currentRsiChart.resize(cw, Math.floor(ch * 0.30) - 4);
+            });
+            currentResizeObserver.observe(container);
 
             if (type === 'price') {
                 asset.sr_zones.forEach(zone => {
@@ -647,8 +919,8 @@ def _get_html_template() -> str:
                         const msg = document.createElement('div');
                         msg.style.cssText = 'position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);color:#8892aa;font-size:1rem;pointer-events:none;text-align:center;';
                         msg.innerHTML = 'No trades in the visible chart window.<br><small>Trades for this asset occurred outside the last 1,000 candles.</small>';
-                        container.style.position = 'relative';
-                        container.appendChild(msg);
+                        priceDiv.style.position = 'relative';
+                        priceDiv.appendChild(msg);
                     }
                 } catch (err) {
                     console.error("Trade History rendering error:", err);

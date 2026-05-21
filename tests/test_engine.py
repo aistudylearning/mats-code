@@ -240,3 +240,50 @@ def test_backtest_result_dataclass():
     assert r.win_rate_pct == 75.0
     assert r.trades == []
     assert r.sr_zones == []
+
+
+def test_trade_dataclass_entry_zone_price():
+    """Trade dataclass should support entry_zone_price."""
+    t = Trade(
+        symbol="BTC/USDT",
+        entry_timestamp_ms=1000,
+        entry_price=50000.0,
+        effective_entry_price=50075.0,
+        position_size_usd=5000.0,
+        entry_zone_price=49800.0,
+    )
+    assert t.entry_zone_price == 49800.0
+
+
+def test_trade_entry_zone_price_defaults_none():
+    """entry_zone_price should default to None when not explicitly set."""
+    t = Trade(
+        symbol="BTC/USDT",
+        entry_timestamp_ms=1000,
+        entry_price=50000.0,
+        effective_entry_price=50075.0,
+        position_size_usd=5000.0,
+    )
+    assert t.entry_zone_price is None
+
+
+def test_trade_entry_zone_price_differs_from_entry_price():
+    """
+    entry_zone_price (S/R zone) and entry_price (fill price) are
+    intentionally different values — the zone triggers the trade but
+    the fill happens at the current close, which may be ±2% away.
+    """
+    t = Trade(
+        symbol="BTC/USDT",
+        entry_timestamp_ms=1000,
+        entry_price=50250.0,          # actual fill at close
+        effective_entry_price=50325.0, # after friction
+        position_size_usd=5000.0,
+        entry_zone_price=50000.0,      # S/R zone that triggered the entry
+        entry_zone_weight=7,
+    )
+    assert t.entry_zone_price == 50000.0
+    assert t.entry_price == 50250.0
+    assert t.entry_zone_weight == 7
+    # They should be close but NOT equal
+    assert t.entry_zone_price != t.entry_price

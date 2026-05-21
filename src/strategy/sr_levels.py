@@ -29,6 +29,7 @@ from src.config.settings import (
     SR_MAX_PIVOTS,
     SR_PIVOT_WINDOW,
     SR_WEIGHTS,
+    STRUCTURAL_TIMEFRAMES,
 )
 from src.utils.logger import get_logger
 
@@ -192,31 +193,69 @@ def cluster_zones(zones: list[SRZone], threshold: float = SR_CLUSTER_THRESHOLD) 
     return clustered
 
 
+def merge_zone_into_clustered(
+    clustered: list[SRZone],
+    new_zone: SRZone,
+    threshold: float = SR_CLUSTER_THRESHOLD,
+) -> None:
+    """
+    Incrementally merge a single new zone into an already-clustered list.
+    Mutates `clustered` in-place. O(k) per call.
+    """
+    for i, existing in enumerate(clustered):
+        if existing.kind != new_zone.kind:
+            continue
+        distance = abs(existing.price - new_zone.price) / existing.price
+        if distance <= threshold:
+            avg_price = (existing.price + new_zone.price) / 2
+            combined_tfs = list(set(existing.contributing_timeframes + new_zone.contributing_timeframes))
+            combined_weight = existing.combined_weight + new_zone.weight
+            active_from = min(existing.bar_active_from, new_zone.bar_active_from)
+            clustered[i] = SRZone(
+                price=avg_price,
+                kind=existing.kind,
+                timeframe=existing.timeframe,
+                weight=existing.weight,
+                bar_active_from=active_from,
+                contributing_timeframes=combined_tfs,
+                combined_weight=combined_weight,
+            )
+            return
+    clustered.append(new_zone)
+
+
 def build_sr_zones(
     frames: dict[str, pl.DataFrame],
     window: int = SR_PIVOT_WINDOW,
     max_pivots: int = SR_MAX_PIVOTS,
     cluster_threshold: float = SR_CLUSTER_THRESHOLD,
+    cluster: bool = True,
 ) -> list[SRZone]:
     """
-    Build the full multi-timeframe S/R zone list.
+    Build the S/R zone list, optionally clustered. Filters only structural timeframes.
 
     Args:
         frames:           Dict {timeframe: OHLCV DataFrame}.
         window:           Local extrema window N.
         max_pivots:       Max pivots per timeframe M.
         cluster_threshold: Proximity merge threshold (0.5%).
+        cluster:          Whether to cluster the returned zones.
 
     Returns:
-        Clustered list of SRZone objects with combined weights.
+        Clustered (or raw) list of SRZone objects.
     """
     all_zones: list[SRZone] = []
     for tf, df in frames.items():
-        if df.is_empty() or tf not in SR_WEIGHTS:
+        if tf not in STRUCTURAL_TIMEFRAMES:
+            continue
+        if df.is_empty():
             continue
         pivots = detect_pivots(df, timeframe=tf, window=window, max_pivots=max_pivots)
         all_zones.extend(pivots)
         log.debug(f"  {tf}: {len(pivots)} pivots detected")
+
+    if not cluster:
+        return all_zones
 
     clustered = cluster_zones(all_zones, threshold=cluster_threshold)
     high_conviction = [z for z in clustered if z.combined_weight >= HIGH_CONVICTION_THRESHOLD]

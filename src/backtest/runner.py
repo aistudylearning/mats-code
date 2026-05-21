@@ -39,6 +39,9 @@ def _run_all_tfs_for_symbol(
     signal_version: str,
     proximity_pct: float | None,
     execution_tfs: list[str],
+    progress_counter: multiprocessing.Value | None = None,
+    progress_lock: multiprocessing.Lock | None = None,
+    total_assets: int = 0,
 ) -> list[tuple[str, str, BacktestResult]]:
     """
     Worker function: load all timeframes for one symbol ONCE, compute S/R
@@ -59,19 +62,22 @@ def _run_all_tfs_for_symbol(
     """
     import gc
     from src.data.storage import load_ohlcv
-    from src.config.settings import TIMEFRAMES
+    from src.config.settings import TIMEFRAMES, STRUCTURAL_TIMEFRAMES
     from src.strategy.sr_levels import build_sr_zones
     from src.strategy.indicators import compute_rsi, compute_volume_sma
 
-    # Load all TF data ONCE into RAM
+    # Load only structural and execution TFs into RAM
     frames: dict[str, "pl.DataFrame"] = {}
+    target_tfs = set(STRUCTURAL_TIMEFRAMES) | set(execution_tfs)
     for tf in TIMEFRAMES:
+        if tf not in target_tfs:
+            continue
         df = load_ohlcv(sym, tf, root=data_root)
         if not df.is_empty():
             frames[tf] = df
 
-    # Compute S/R zones ONCE — they depend only on raw OHLCV, not on execution_tf
-    zones = build_sr_zones(frames)
+    # Compute raw S/R zones ONCE — they depend only on raw OHLCV, not on execution_tf
+    zones = build_sr_zones(frames, cluster=False)
 
     # Compute RSI ONCE per timeframe — RSI on 4.58M 1m rows takes ~2 sec;
     # doing it 10× (once per execution TF) was pure waste.
@@ -104,6 +110,13 @@ def _run_all_tfs_for_symbol(
             precomputed_indicators=all_indicators[tf],
         )
         results.append((sym, tf, r))
+
+        if progress_counter is not None and progress_lock is not None:
+            with progress_lock:
+                progress_counter.value += 1
+                current_done = progress_counter.value
+            pct = (current_done / total_assets) * 100
+            log.info(f"🏆 PROGRESS: Completed {sym} ({tf}) | Done {current_done}/{total_assets} runs ({pct:.1f}%)")
 
     # Release memory — critical with 50 symbols and multi-GB 1m data per symbol
     del frames, zones, all_indicators, base_indicators
@@ -153,10 +166,17 @@ def run_portfolio_backtest(
         f"strategy=symbol-parallel (1 disk load per symbol)"
     )
 
+    import multiprocessing
+    manager = multiprocessing.Manager()
+    progress_counter = manager.Value('i', 0)
+    progress_lock = manager.Lock()
+    total_assets = len(symbols) * len(execution_tfs)
+
     # One job per symbol — each worker runs all TFs sequentially, loading data once
     all_results: list[list[tuple[str, str, BacktestResult]]] = Parallel(n_jobs=n_jobs)(
         delayed(_run_all_tfs_for_symbol)(
-            sym, total_capital, data_root, signal_version, proximity_pct, execution_tfs
+            sym, total_capital, data_root, signal_version, proximity_pct, execution_tfs,
+            progress_counter, progress_lock, total_assets
         )
         for sym in symbols
     )
@@ -187,6 +207,7 @@ def run_portfolio_backtest(
         )
         for sym, r in tf_results.items():
             print(f"  [{tf}] {sym}: {r.total_return_pct:+.2f}% return | {r.total_trades} trades")
+        print(f"\n>>>> [{tf}] TOTAL PORTFOLIO RETURN: {total_return_pct:+.2f}% ({total_pnl:+.2f} USD) | {total_trades} trades total <<<<\n")
 
     if export_csv:
         from src.utils.exporter import export_trades_to_csv

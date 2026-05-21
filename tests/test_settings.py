@@ -33,6 +33,7 @@ from src.config.settings import (
     TIMEFRAMES,
     TF_MAP,
     MVP_ASSETS,
+    STRUCTURAL_TIMEFRAMES,
     # Signal 0.2
     VOLUME_SMA_LENGTH,
     VOLUME_SPIKE_MULTIPLIER,
@@ -136,6 +137,23 @@ def test_sr_weights_monotonic():
             f"S/R weight for {TIMEFRAMES[i]} ({ordered_weights[i]}) "
             f"< {TIMEFRAMES[i-1]} ({ordered_weights[i-1]})"
         )
+
+
+def test_structural_timeframes_subset_of_timeframes():
+    """All structural timeframes must be present in the full TIMEFRAMES list."""
+    for tf in STRUCTURAL_TIMEFRAMES:
+        assert tf in TIMEFRAMES, f"Structural TF {tf} not found in TIMEFRAMES"
+
+def test_structural_timeframes_exclude_low_tfs():
+    """Low timeframes (1m, 5m, 15m, 30m) must NOT be in STRUCTURAL_TIMEFRAMES."""
+    low_tfs = {"1m", "5m", "15m", "30m"}
+    for tf in STRUCTURAL_TIMEFRAMES:
+        assert tf not in low_tfs, f"Low TF {tf} should not be structural"
+
+def test_structural_timeframes_have_sr_weights():
+    """Every structural timeframe must have an SR_WEIGHTS entry."""
+    for tf in STRUCTURAL_TIMEFRAMES:
+        assert tf in SR_WEIGHTS, f"Missing SR_WEIGHTS entry for structural TF {tf}"
 
 
 # ── MVP assets ───────────────────────────────────────────────────────

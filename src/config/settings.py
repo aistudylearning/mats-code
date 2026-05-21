@@ -25,6 +25,7 @@ EXCHANGE_ID = "binance"
 # Timeframes (ordered weakest → strongest for S/R weighting)
 # ---------------------------------------------------------------------------
 TIMEFRAMES = ["1m", "5m", "15m", "30m", "1h", "2h", "4h", "1d", "1w", "1M"]
+STRUCTURAL_TIMEFRAMES = ["1h", "2h", "4h", "1d", "1w", "1M"]
 
 # Map ccxt timeframe strings to display names used in parquet paths
 TF_MAP = {

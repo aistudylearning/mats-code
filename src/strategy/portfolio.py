@@ -92,8 +92,8 @@ def compute_position_fraction(
     Returns:
         Position fraction in [0.0, 1.0], rounded to nearest `step`.
     """
-    if u_price <= l_price:
-        log.warning("UPrice <= LPrice — returning 0 position fraction")
+    if u_price - l_price < 1e-5:
+        log.warning("Compressed bounds (UPrice - LPrice < 1e-5) — returning 0 position fraction")
         return 0.0
 
     raw = 1.0 - (current_price - l_price) / (u_price - l_price)

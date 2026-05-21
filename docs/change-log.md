@@ -65,3 +65,31 @@
   (4) **Lazy Parquet Loading**: Refactored `load_ohlcv` in `storage.py` to use `pl.scan_parquet()` with glob patterns instead of individual file `read_parquet()` + `concat()` + `unique()`, leveraging Polars' optimized lazy streaming and removing redundant deduplication for non-overlapping monthly partitions.
 *** Expected result: Substantial reduction in backtest runtime (estimated to drop from 33 min to ~20 min). Documented the full multi-phase optimization strategy, including the upcoming high-risk vectorized loop refactor (#2), in `mats-architecture/02_System_Design/MATS-Design-3.3.3-Backtest-Performance-Optimizations.md`.
   Files changed: `main.py`, `src/backtest/engine.py`, `src/backtest/runner.py`, `src/data/storage.py`.
+
+---
+
+[20260521:16:30:00] Change-log:
+*** Quantitative Logic Strategy Overhaul (BUY/SELL Timeframe Logic & Noise Filtering):
+  (1) **Decoupled Structural & Execution Timeframes**: Statically separated high-timeframe structural environments from the low-timeframe execution environments. Standard S/R zone calculations and RSI filters now ignore low-timeframe data (`1m`, `5m`, `15m`, `30m`) and restrict analyses exclusively to robust macro timeframes (`STRUCTURAL_TIMEFRAMES = ["1h", "2h", "4h", "1d", "1w", "1M"]`). This completely eliminates low-timeframe noise and transaction fee bleeding from false breakouts on high-frequency noise.
+  (2) **Incremental S/R Clustered Level Calculation**: Previously, pivot zones and support/resistance clusters were calculated over the complete historical dataset in a single batch, introducing severe global look-ahead bias into the backtest engine (the strategy was making entry/exit decisions based on support/resistance zones that would only form in the future). We resolved this by loading only the raw unclustered pivot prices upfront and computing clustered S/R levels *incrementally* at each step of the historical timeline as the price bar advances.
+  (3) **Strongest-TF RSI Confirmation**: Refactored the entry/exit validation rules. Instead of checking if "any" contributing timeframe had an oversold/overbought RSI (which allowed weaker, low-weight timeframes to trigger invalid trades), the engine now selectively queries *only* the single strongest structural timeframe (based on clustered S/R weight) for RSI confirmation.
+  (4) **Per-Zone Entry Cooldowns**: Implemented a 24-hour entry cooldown dictionary keyed off the rounded S/R zone price (`round(signal.zone.price, 2)`). This prevents a common quantitative backtest issue where price oscillates rapidly across a single level, triggering multiple entries/exits within a few bars and causing significant slippage/fee friction.
+
+*** Premium HTML Dashboard & Interactive Dual-Pane Chart Additions:
+  (1) **TradingView-Style Synchronized Price & RSI Panes**: Modified `showChartModal` and `closeChartModal` inside the HTML exporter to split the chart modal into a vertically stacked 2-pane flex container: a Price candlestick and markers panel (70% height) on top, and an RSI (14) indicator panel (30% height) directly below.
+  (2) **Timescale and Crosshair Hover Sync**: Synchronized the two charts using Lightweight Charts API subscriptions:
+      - Synchronized scrolling and zooming via `subscribeVisibleLogicalRangeChange` on both charts.
+      - Synchronized crosshair cursors and hover markers via `subscribeCrosshairMove` on both charts, matching native TradingView behavior.
+      - Plotted horizontal dashed boundaries on the RSI chart at `30` (oversold, green), `50` (neutral, gray), and `70` (overbought, red) levels.
+  (3) **Total Return Table Card**: Upgraded the HTML summary block to display the cumulative, overall total portfolio return and net USD dollar profit across all active assets prominently at the top of the dashboard pages, matching the backtest log metrics perfectly.
+
+*** High-Density Data Packaging (Direct Browser Tab Opening on Mobile):
+  (1) **Keyless List-Matrix Serialization ( Slashing Monolithic HTML Size by >60%)**: In a 50-asset, 10-timeframe portfolio run, storing detailed candlestick records for 1,000 bars per combination as standard JSON objects (`{"time": t, "open": o, ...}`) bloated the single-page HTML report to **54 MB**, triggering HTTP 413 ("Request Entity Too Large") Telegram upload rejections. We refactored `_build_assets_data` to serialize chart, trade history, and S/R levels as ultra-compact flat list matrices: `[time, open, high, low, close, rsi]`.
+  (2) **Transparent Client-Side Data Inflation**: Added a high-speed JavaScript mapping block in the HTML script tag. Upon loading the page, it instantly inflates the keyless arrays back into full JSON objects in memory before table rendering. This reduced the monolithic HTML file size to **~18-20 MB**, allowing it to be sent directly as a raw HTML document to Telegram and opened with **one single tap** in any standard mobile or desktop browser (no manual unzipping required).
+  (3) **Automatic Zip Fallback Safeguard**: Maintained an automatic zip compression trigger inside `telegram_bot.py` as a fail-safe backup for extremely large multi-week sweeps that might exceed 40 MB.
+
+*** Performance & User Experience Polish:
+  (1) **Timeframe-Granular Real-Time Progress Logs**: Refactored `runner.py` to print real-time completion status at the individual timeframe level rather than symbol level, showing step-by-step progress across all 500 parallel combinations (e.g., `🏆 PROGRESS: Completed TON/USDT (1h) | Done 12/500 runs (2.4%)`).
+  (2) **RAM Cache Logging Clearances**: Marked loaded cached frames as `[RAM Cache]` in starting logs to ensure clear visual separation from cold disk reads.
+  
+  Files changed: `src/backtest/engine.py`, `src/backtest/runner.py`, `src/config/settings.py`, `src/strategy/signals.py`, `src/strategy/sr_levels.py`, `src/utils/html_exporter.py`, `src/utils/telegram_bot.py`, `docs/change-log.md`.

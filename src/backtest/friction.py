@@ -62,6 +62,9 @@ def is_trade_viable(entry_price: float, target_exit_price: float) -> bool:
     if entry_price <= 0:
         return False
     spread = (target_exit_price - entry_price) / entry_price
+    if spread <= 0:
+        log.warning(f"Inverted levels detected (support={entry_price}, resistance={target_exit_price})")
+        return False
     viable = spread > MIN_SPREAD_TO_TRADE
     if not viable:
         log.debug(

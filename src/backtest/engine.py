@@ -27,12 +27,13 @@ from src.config.settings import (
     DEFAULT_INITIAL_CAPITAL,
     TIMEFRAMES,
     SR_WEIGHTS,
+    STRUCTURAL_TIMEFRAMES,
 )
 from src.data.storage import load_ohlcv
 from src.strategy.indicators import compute_indicators_all_timeframes
 from src.strategy.portfolio import compute_position_size_usd, compute_rolling_bounds
 from src.strategy.signals import SignalResult, evaluate_signal
-from src.strategy.sr_levels import SRZone, build_sr_zones, get_active_zones
+from src.strategy.sr_levels import SRZone, build_sr_zones, get_active_zones, merge_zone_into_clustered
 from src.utils.logger import get_logger
 
 log = get_logger(__name__)
@@ -54,6 +55,7 @@ class Trade:
     pnl: float | None = None
     exit_reason: str = ""         # 'sell_resistance' or 'sell_stoploss'
     entry_zone_weight: int = 0
+    entry_zone_price: float | None = None
 
 
 @dataclass
@@ -169,7 +171,7 @@ def run_backtest(
     Returns:
         BacktestResult with all trades and summary metrics.
     """
-    log.info(f"=== Starting backtest for {symbol} ===")
+    log.info(f"=== Starting backtest for {symbol} ({execution_tf}) ===")
 
     # ------------------------------------------------------------------
     # 1. Load all OHLCV timeframes from parquet (or use preloaded cache)
@@ -178,10 +180,13 @@ def run_backtest(
         # Caller loaded data once — skip all disk reads
         frames = preloaded_frames
         for tf, df in frames.items():
-            log.info(f"  Loaded {tf}: {len(df)} rows")
+            log.info(f"  [RAM Cache] {tf}: {len(df)} rows")
     else:
         frames = {}
+        target_tfs = set(STRUCTURAL_TIMEFRAMES) | {execution_tf}
         for tf in TIMEFRAMES:
+            if tf not in target_tfs:
+                continue
             df = load_ohlcv(symbol, tf, root=data_root)
             if not df.is_empty():
                 frames[tf] = df
@@ -221,7 +226,7 @@ def run_backtest(
     if precomputed_zones is not None:
         all_zones = precomputed_zones
     else:
-        all_zones = build_sr_zones(frames)
+        all_zones = build_sr_zones(frames, cluster=False)
     # Pre-sort zones by bar_active_from once for fast sequential filtering
     all_zones_sorted = sorted(all_zones, key=lambda z: z.bar_active_from)
 
@@ -256,6 +261,8 @@ def run_backtest(
     # We advance this pointer forward as time progresses (O(1) amortized)
     zone_ptr: int = 0
     active_zones_cache: list[SRZone] = []
+    zone_cooldowns: dict[float, int] = {}
+    COOLDOWN_MS = 24 * 3600 * 1000
 
     import bisect
     ROLLING_WEEKS = 52
@@ -293,9 +300,9 @@ def run_backtest(
                 l_price = 0.0
                 u_price = float("inf")
 
-        # -- Advance active zones pointer (amortized O(1) instead of O(n) filter each bar) --
+        # -- Advance raw pivots and merge incrementally (Look-Ahead-Bias-Free) --
         while zone_ptr < len(all_zones_sorted) and all_zones_sorted[zone_ptr].bar_active_from <= ts_ms:
-            active_zones_cache.append(all_zones_sorted[zone_ptr])
+            merge_zone_into_clustered(active_zones_cache, all_zones_sorted[zone_ptr])
             zone_ptr += 1
         active_zones = active_zones_cache
 
@@ -321,6 +328,13 @@ def run_backtest(
 
         # -- Process Buy signal --
         if signal.action == "buy" and signal.zone is not None:
+            # Prevent overtrading: per-zone 24-hour cooldown
+            zone_key = round(signal.zone.price, 2)
+            if ts_ms - zone_cooldowns.get(zone_key, 0) < COOLDOWN_MS:
+                log.debug(f"  [{ts_ms}] Trade rejected by 24h zone cooldown")
+                equity_curve.append(capital)
+                continue
+
             # Find nearest resistance zone for trade viability check
             resistance_zones = [
                 z for z in active_zones
@@ -347,6 +361,7 @@ def run_backtest(
                 effective_entry_price=eff_entry,
                 position_size_usd=pos_size,
                 entry_zone_weight=signal.zone.combined_weight,
+                entry_zone_price=zone_key,
             )
             in_position = True
             dt_str = datetime.fromtimestamp(ts_ms / 1000, tz=timezone.utc).strftime('%Y-%m-%d')
@@ -367,6 +382,11 @@ def run_backtest(
             capital += pnl
             completed_trades.append(current_trade)
             in_position = False
+            
+            # Record cooldown for the zone that triggered the entry
+            if current_trade.entry_zone_price is not None:
+                zone_cooldowns[current_trade.entry_zone_price] = ts_ms
+
             dt_str = datetime.fromtimestamp(ts_ms / 1000, tz=timezone.utc).strftime('%Y-%m-%d')
             log.info(
                 f"  [{symbol} {dt_str}] SELL @ {close:.2f} | reason={signal.action} | "
@@ -403,7 +423,9 @@ def run_backtest(
     
     # Calculate isolated return (relative only to this asset's allocated slice of the capital)
     from src.config.settings import ASSET_ALLOCATION
-    asset_frac = ASSET_ALLOCATION.get(symbol, 1.0)
+    asset_frac = ASSET_ALLOCATION.get(symbol, 0.0)
+    if asset_frac <= 0:
+        log.warning(f"Symbol {symbol} has 0.0 or undefined asset allocation fraction — isolated return set to 0.0")
     allocated_initial_capital = initial_capital * asset_frac
     isolated_return_pct = ((capital - initial_capital) / allocated_initial_capital) * 100.0 if allocated_initial_capital > 0 else 0.0
 

@@ -24,6 +24,7 @@ from src.config.settings import (
     HIGH_CONVICTION_THRESHOLD,
     SR_PROXIMITY_PCT,
     VOLUME_SPIKE_MULTIPLIER,
+    SR_WEIGHTS,
 )
 from src.strategy.sr_levels import SRZone
 from src.utils.logger import get_logger
@@ -44,30 +45,31 @@ class SignalResult:
 
 def _price_near_zone(price: float, zone_price: float, proximity_pct: float = SR_PROXIMITY_PCT) -> bool:
     """True if price is within ±proximity_pct of zone_price."""
+    if zone_price <= 0:
+        return False
     return abs(price - zone_price) / zone_price <= proximity_pct
 
 
 def _rsi_confirms_entry(zone: SRZone, rsi_by_tf: dict[str, float | None]) -> bool:
     """
-    Entry RSI check: at least one RSI from the zone's contributing timeframes is < 30.
-    Only checks the timeframes that formed the zone (not always 1H).
+    Entry RSI check: check the RSI of the strongest contributing timeframe of the S/R zone.
     """
-    for tf in zone.contributing_timeframes:
-        rsi = rsi_by_tf.get(tf)
-        if rsi is not None and rsi < 30:
-            return True
-    return False
+    if not zone.contributing_timeframes:
+        return False
+    strongest_tf = max(zone.contributing_timeframes, key=lambda tf: SR_WEIGHTS.get(tf, 0))
+    rsi = rsi_by_tf.get(strongest_tf)
+    return rsi is not None and rsi < 30
 
 
 def _rsi_confirms_exit(zone: SRZone, rsi_by_tf: dict[str, float | None]) -> bool:
     """
-    Exit RSI check: at least one RSI from the zone's contributing timeframes is > 70.
+    Exit RSI check: check the RSI of the strongest contributing timeframe of the S/R zone.
     """
-    for tf in zone.contributing_timeframes:
-        rsi = rsi_by_tf.get(tf)
-        if rsi is not None and rsi > 70:
-            return True
-    return False
+    if not zone.contributing_timeframes:
+        return False
+    strongest_tf = max(zone.contributing_timeframes, key=lambda tf: SR_WEIGHTS.get(tf, 0))
+    rsi = rsi_by_tf.get(strongest_tf)
+    return rsi is not None and rsi > 70
 
 
 def evaluate_signal(
@@ -100,7 +102,13 @@ def evaluate_signal(
     Returns:
         SignalResult with action: 'buy', 'sell_resistance', 'sell_stoploss', or 'hold'.
     """
-    high_conviction = [z for z in active_zones if z.combined_weight >= HIGH_CONVICTION_THRESHOLD]
+    # Sort high-conviction zones:
+    # 1. Primary key: combined_weight descending (stronger level takes priority)
+    # 2. Secondary key: absolute distance from current_price ascending (closer level takes priority)
+    high_conviction = sorted(
+        [z for z in active_zones if z.combined_weight >= HIGH_CONVICTION_THRESHOLD],
+        key=lambda z: (-z.combined_weight, abs(current_price - z.price))
+    )
 
     # --- Hard Stop-Loss (takes priority over all other exit conditions) ---
     if in_position and current_price < l_price:
