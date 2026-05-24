@@ -5,9 +5,12 @@
 
 cd ~/projects/mats-code
 
-# 1. Export your Telegram credentials securely into the environment
-export MATS_TELEGRAM_BOT_TOKEN="8604062820:AAHvBxNVETmXQl3pr7PHcRFJf6atzpJ3vi8"
-export MATS_TELEGRAM_CHAT_ID="1408951620"
+# 1. Export your Telegram credentials securely into the environment from .env
+if [ -f .env ]; then
+    source .env
+else
+    echo "⚠️  .env file not found! Please create it from .env.template"
+fi
 
 # 2. Run the full portfolio backtest across all timeframes and generate the HTML report!
 python3 main.py portfolio \
